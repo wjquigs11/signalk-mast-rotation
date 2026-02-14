@@ -59,15 +59,27 @@ export default function (app: PluginServerApp): Plugin {
       return {
         type: 'object',
         properties: {
-          // Plugin-specific configuration properties
+          enabled: {
+            type: 'boolean',
+            title: 'Enable Plugin',
+            default: true
+          },
+          enableLogging: {
+            type: 'boolean',
+            title: 'Enable Logging',
+            default: false
+          },
+          enableDebug: {
+            type: 'boolean',
+            title: 'Enable Debug Logging',
+            default: false
+          },
           mastRotHelperPort: {
             type: 'number',
             title: 'Mast Rotation Helper Port',
             description: 'Port number for the Mast Rotation Helper service',
             default: 3333
           }
-          // The standard enabled, enableLogging, and enableDebug properties
-          // are handled automatically by the SignalK server UI
         }
       }
     },
