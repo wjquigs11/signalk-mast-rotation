@@ -5,7 +5,7 @@
 
 import * as path from 'path'
 import { spawn, ChildProcess } from 'child_process'
-// We'll use require for body-parser to avoid TypeScript errors
+import { Plugin, ServerAPI } from '@signalk/server-api'
 
 // Add Node.js process type
 declare const process: {
@@ -13,73 +13,33 @@ declare const process: {
   [key: string]: any;
 };
 
-// Define types for SignalK server API
-interface Plugin {
-  id: string
-  name: string
-  description: string
-  schema?: () => any
-  uiSchema?: any
-  enabledByDefault?: boolean
-  start: (options: any) => void
-  stop: () => void
-  registerWithRouter?: (router: any) => void
-}
-
-interface PluginServerApp {
-  debug: (msg: string) => void
-  error: (msg: string) => void
-  setPluginStatus: (status: string) => void
-  setPluginError: (error: string) => void
-  getSelfPath: (path: string) => any
-  subscriptionmanager: {
-    subscribe: (subscription: any, callback: (data: any) => void, error: (err: Error) => void) => void
-    unsubscribe: () => void
-  }
-  handleMessage: (id: string, message: any) => void
-}
-
-export default function (app: PluginServerApp): Plugin {
-  // Plugin-level variables
+export default function (app: ServerAPI): Plugin {
   let dataLogger: any = null
   let mastrotProcess: ChildProcess | null = null
+  const unsubscribes: any[] = []
   
   const plugin: Plugin = {
     id: 'mastrot',
     name: 'Mast Rotation Angle',
-    description: 'Plugin for monitoring and managing mast rotation angle',
+    description: 'Plugin for mast rotation angle',
     enabledByDefault: true,
     
-    // Add configuration for the webapp
     uiSchema: {
       'ui:appKey': 'mastrot-plugin'
     },
     
-    schema() {
-      return {
-        type: 'object',
-        properties: {
-          enabled: {
-            type: 'boolean',
-            title: 'Enable Plugin',
-            default: true
-          },
-          enableLogging: {
-            type: 'boolean',
-            title: 'Enable Logging',
-            default: false
-          },
-          enableDebug: {
-            type: 'boolean',
-            title: 'Enable Debug Logging',
-            default: false
-          },
-          mastRotHelperPort: {
-            type: 'number',
-            title: 'Mast Rotation Helper Port',
-            description: 'Port number for the Mast Rotation Helper service',
-            default: 3333
-          }
+    schema: {
+      type: 'object',
+      properties: {
+        mastRotHelperPort: {
+          type: 'number',
+          title: 'Mast Rotation Helper Port',
+          description: 'Port number for the Mast Rotation Helper service',
+          default: 3333
+        },
+        schemaThing: {
+          type: 'number',
+          description: 'randomThing'
         }
       }
     },
@@ -187,18 +147,21 @@ export default function (app: PluginServerApp): Plugin {
       try {
         app.subscriptionmanager.subscribe(
           {
-            context: 'vessels.self',
+            context: 'vessels.self' as any,
             subscribe: [
               {
-                path: 'sailing.mastAngle',
+                path: 'sailing.mastAngle' as any,
                 period: 500,
                 format: 'delta',
-                policy: 'instant'
+                policy: 'fixed'
               }
             ]
           },
-          onSubscriptionData,
-          subscriptionError
+          unsubscribes,
+          subscriptionError,
+          () => {
+            app.debug('Subscription initialized')
+          }
         )
         app.debug('Successfully subscribed to mastAngle updates')
       } catch (error) {
@@ -241,7 +204,7 @@ export default function (app: PluginServerApp): Plugin {
                       {
                         values: [
                           {
-                            path: 'plugins.mastrot.angle',
+                            path: 'plugins.mastrot.angle' as any,
                             value: mastAngle
                           }
                         ]
@@ -255,15 +218,16 @@ export default function (app: PluginServerApp): Plugin {
         }
       }
       
-      function subscriptionError(err: Error) {
-        app.error(`Error in mastrot subscription: ${err.message}`)
-        app.setPluginError(`Subscription error: ${err.message}`)
+      function subscriptionError(err: unknown) {
+        const error = err instanceof Error ? err : new Error(String(err))
+        app.error(`Error in mastrot subscription: ${error.message}`)
+        app.setPluginError(`Subscription error: ${error.message}`)
         
         // Don't let subscription errors crash the plugin
         app.debug('Continuing plugin operation despite subscription error')
         
         // If the error is related to unsubscribes.push, log a more helpful message
-        if (err.message.includes('unsubscribes.push')) {
+        if (error.message.includes('unsubscribes.push')) {
           app.debug('This is a known issue with older SignalK servers. The plugin will continue to function.')
         }
       }
@@ -302,7 +266,7 @@ export default function (app: PluginServerApp): Plugin {
       
       // Unsubscribe from updates with error handling
       try {
-        app.subscriptionmanager.unsubscribe()
+        unsubscribes.forEach(unsubscribe => unsubscribe())
         app.debug('Successfully unsubscribed from SignalK updates')
       } catch (error) {
         app.error(`Error unsubscribing: ${error instanceof Error ? error.message : String(error)}`)
@@ -312,7 +276,7 @@ export default function (app: PluginServerApp): Plugin {
     
     registerWithRouter: function (router: any) {
       // Get the configured port from plugin options
-      const pluginOptions = app.getSelfPath('options')
+      const pluginOptions: any = app.getSelfPath('options')
       const mastRotHelperPort = (pluginOptions && pluginOptions.mastRotHelperPort) ? pluginOptions.mastRotHelperPort : 3333
       
       // Serve the web app from the plugin's public directory
@@ -346,7 +310,7 @@ export default function (app: PluginServerApp): Plugin {
       // Forward API requests to the Express server in mastrot.js
       // This is just a fallback - the Express server in mastrot.js handles API requests directly
       router.get('/api/*', (req: any, res: any) => {
-        const pluginOptions = app.getSelfPath('options')
+        const pluginOptions: any = app.getSelfPath('options')
         const mastRotHelperPort = (pluginOptions && pluginOptions.mastRotHelperPort) ? pluginOptions.mastRotHelperPort : 3333
         
         // Use a proper HTTP client to forward the GET request
@@ -373,7 +337,7 @@ export default function (app: PluginServerApp): Plugin {
       })
       
       router.post('/api/*', (req: any, res: any) => {
-        const pluginOptions = app.getSelfPath('options')
+        const pluginOptions: any = app.getSelfPath('options')
         const mastRotHelperPort = (pluginOptions && pluginOptions.mastRotHelperPort) ? pluginOptions.mastRotHelperPort : 3333
         
         // Use a proper HTTP client to forward the POST request
