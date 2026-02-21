@@ -1,36 +1,23 @@
-/**
- * SignalK Connection Module
- * Handles all SignalK WebSocket connections, authentication, and data forwarding
- */
-
 const WebSocket = require('ws');
 const fetch = require('node-fetch');
 const fs = require('fs-extra');
 const path = require('path');
-
-// WebSocket states for readability
 WebSocket.CONNECTING = 0;
 WebSocket.OPEN = 1;
 WebSocket.CLOSING = 2;
 WebSocket.CLOSED = 3;
-
-// Module state
 let signalkWs = null;
 let wsConnected = false;
 let authToken = null;
-
-// Configuration
 let skServer = 'localhost';
 let skPort = 3000;
 let clientId = 'mast-rotation';
 let tokenFilePath = '';
 let DEBUG = false;
 let VERBOSE = false;
-
 // Callbacks
 let onBoatHeadingUpdate = null;
 let onConnectionStatusChange = null;
-
 /**
  * Initialize the SignalK module
  */
@@ -44,10 +31,6 @@ function init(config) {
   onBoatHeadingUpdate = config.onBoatHeadingUpdate || null;
   onConnectionStatusChange = config.onConnectionStatusChange || null;
 }
-
-/**
- * Load authentication token from file
- */
 async function loadToken() {
   try {
     if (await fs.pathExists(tokenFilePath)) {
@@ -64,10 +47,6 @@ async function loadToken() {
     return null;
   }
 }
-
-/**
- * Save authentication token to file
- */
 async function saveToken(token) {
   try {
     await fs.writeFile(tokenFilePath, token);
@@ -76,14 +55,9 @@ async function saveToken(token) {
     console.error(`Error saving token: ${error.message}`);
   }
 }
-
-/**
- * Request access token from SignalK server
- */
 async function requestAccessToken() {
   try {
     console.log('Requesting access token from SignalK server...');
-    
     const response = await fetch(`http://${skServer}:${skPort}/signalk/v1/access/requests`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -92,13 +66,10 @@ async function requestAccessToken() {
         description: 'Mast Rotation Correction'
       })
     });
-    
     if (response.ok) {
       const data = await response.json();
       console.log('Access request submitted. Please approve the request in the SignalK server interface.');
       console.log(`Request ID: ${data.requestId}`);
-      
-      // Start polling for token approval
       pollForToken(data.href);
       return null;
     } else {
@@ -112,30 +83,21 @@ async function requestAccessToken() {
     return null;
   }
 }
-
-/**
- * Poll for token approval
- */
 async function pollForToken(href) {
   try {
     console.log('Checking token status...');
-    
     const response = await fetch(`http://${skServer}:${skPort}${href}`);
     if (!response.ok) {
       console.error(`Failed to check token status: ${response.status} ${response.statusText}`);
       setTimeout(() => pollForToken(href), 5000);
       return;
     }
-    
     const data = await response.json();
-    
     if (data.state === 'COMPLETED') {
       if (data.accessRequest && data.accessRequest.permission === 'APPROVED') {
         console.log('Access request approved!');
         authToken = data.accessRequest.token;
         await saveToken(authToken);
-        
-        // Now that we have a token, connect to WebSocket
         connectToSignalK();
       } else {
         console.error('Access request was denied or expired');
@@ -155,40 +117,27 @@ async function pollForToken(href) {
     }
   }
 }
-
-/**
- * Connect to SignalK WebSocket
- */
 function connectToSignalK() {
   try {
     let wsUrl = `ws://${skServer}:${skPort}/signalk/v1/stream?subscribe=none`;
-    
     if (authToken) {
       wsUrl += `&token=${authToken}`;
     }
-    
     wsUrl = wsUrl.replace('?subscribe=none&token=', '?token=');
-    
     console.log(`Connecting to SignalK WebSocket at ${wsUrl}`);
-    
     signalkWs = new WebSocket(wsUrl);
-    
     console.log('WebSocket connection attempt started');
-    
     signalkWs.on('open', () => {
       console.log('Connected to SignalK WebSocket');
       wsConnected = true;
-      
       if (onConnectionStatusChange) {
         onConnectionStatusChange(true);
       }
-      
       console.log('WebSocket state after connection:', {
         readyState: signalkWs.readyState,
         bufferedAmount: signalkWs.bufferedAmount,
         url: signalkWs.url
       });
-      
       setTimeout(() => {
         if (signalkWs.readyState === WebSocket.OPEN) {
           sendMetadata();
@@ -198,38 +147,28 @@ function connectToSignalK() {
         }
       }, 1000);
     });
-    
     signalkWs.on('message', (data) => {
-      // We don't subscribe to anything, so we shouldn't receive updates
-      // This is here just in case SignalK sends unsolicited messages
       if (DEBUG || VERBOSE) {
         try {
           const msg = JSON.parse(data);
-          // console.log('Received SignalK message:', JSON.stringify(msg, null, 2));
         } catch (error) {
-          // console.log('Received non-JSON SignalK message:', data.toString());
         }
       }
     });
-    
     signalkWs.on('error', (error) => {
       console.error(`SignalK WebSocket error: ${error.message}`);
       console.error('Error details:', error);
       wsConnected = false;
-      
       if (onConnectionStatusChange) {
         onConnectionStatusChange(false);
       }
     });
-    
     signalkWs.on('close', () => {
       console.log('SignalK WebSocket connection closed');
       wsConnected = false;
-      
       if (onConnectionStatusChange) {
         onConnectionStatusChange(false);
       }
-      
       setTimeout(() => {
         if (!wsConnected) {
           console.log('Attempting to reconnect to SignalK...');
@@ -240,11 +179,9 @@ function connectToSignalK() {
   } catch (error) {
     console.error(`Error connecting to SignalK: ${error.message}`);
     wsConnected = false;
-    
     if (onConnectionStatusChange) {
       onConnectionStatusChange(false);
     }
-    
     setTimeout(() => {
       if (!wsConnected) {
         console.log('Attempting to reconnect to SignalK...');
@@ -253,10 +190,6 @@ function connectToSignalK() {
     }, 5000);
   }
 }
-
-/**
- * Send metadata for mastAngle path
- */
 function sendMetadata() {
   const metadataMsg = {
     context: 'vessels.self',
@@ -279,11 +212,9 @@ function sendMetadata() {
       }
     ]
   };
-  
   try {
     const metadataJson = JSON.stringify(metadataMsg);
     console.log('Sending metadata message:', metadataJson);
-    
     if (signalkWs && signalkWs.readyState === WebSocket.OPEN) {
       signalkWs.send(metadataJson);
       console.log('Sent metadata for mastAngle path');
@@ -294,11 +225,6 @@ function sendMetadata() {
     console.error('Error sending metadata:', error.message);
   }
 }
-
-/**
- * Send subscriptions to SignalK
- * Note: Currently not used - we get wind from CAN and heading from pypilot
- */
 function sendSubscriptions() {
   const subscriptionMsg = {
     context: 'vessels.self',
@@ -317,11 +243,9 @@ function sendSubscriptions() {
       }
     ]
   };
-  
   try {
     const subscriptionJson = JSON.stringify(subscriptionMsg);
     console.log('Sending subscription message:', subscriptionJson);
-    
     if (signalkWs && signalkWs.readyState === WebSocket.OPEN) {
       signalkWs.send(subscriptionJson);
       console.log('Subscribed to SignalK wind data');
@@ -332,10 +256,6 @@ function sendSubscriptions() {
     console.error('Error sending subscription:', error.message);
   }
 }
-
-/**
- * Send test update to verify connection
- */
 function sendTestUpdate() {
   setTimeout(() => {
     if (wsConnected && signalkWs.readyState === WebSocket.OPEN) {
@@ -360,7 +280,6 @@ function sendTestUpdate() {
       };
       try {
         const testUpdateJson = JSON.stringify(testUpdate);
-        
         if (signalkWs && signalkWs.readyState === WebSocket.OPEN) {
           signalkWs.send(testUpdateJson);
           console.log('Sent test update to SignalK');
@@ -373,16 +292,10 @@ function sendTestUpdate() {
     }
   }, 2000);
 }
-
-/**
- * Process pypilot data from SignalK
- * Note: Currently not used - we get heading directly from pypilot TCP connection
- */
 function processPypilotData(update) {
   if (!update.values || !Array.isArray(update.values)) {
     return;
   }
-  
   for (const value of update.values) {
     if (value.path === 'navigation.headingMagnetic' && value.value !== undefined) {
       if (onBoatHeadingUpdate) {
@@ -391,10 +304,6 @@ function processPypilotData(update) {
     }
   }
 }
-
-/**
- * Forward wind data to SignalK server
- */
 async function forwardWindData(windData) {
   try {
     if (!wsConnected || !signalkWs || signalkWs.readyState !== WebSocket.OPEN) {
@@ -402,7 +311,6 @@ async function forwardWindData(windData) {
       connectToSignalK();
       return;
     }
-    
     const deltaUpdate = {
       context: 'vessels.self',
       updates: [
@@ -416,26 +324,19 @@ async function forwardWindData(windData) {
         }
       ]
     };
-    
     const deltaJson = JSON.stringify(deltaUpdate);
-    
     if (DEBUG) {
       console.log('Using delta format for updates:');
       console.log(JSON.stringify(deltaUpdate, null, 2));
     }
-    
-    // Helper function to convert radians to degrees
     const radToDeg = (rad) => rad !== null ? (rad * 180 / Math.PI).toFixed(1) : 'null';
-    
     if (VERBOSE) {
       console.log(`Sending delta update to SignalK | AWA: ${radToDeg(windData.debug.inputAWA)}° | Boat: ${radToDeg(windData.debug.boatHeading)}° | Mast: ${radToDeg(windData.debug.mastHeading)}°`);
     }
-    
     if (DEBUG) {
       console.log('WebSocket readyState:', signalkWs.readyState);
       console.log('WebSocket bufferedAmount:', signalkWs.bufferedAmount);
     }
-    
     try {
       if (typeof deltaJson === 'string') {
         signalkWs.send(deltaJson);
@@ -445,7 +346,6 @@ async function forwardWindData(windData) {
     } catch (error) {
       console.error(`Error sending update: ${error.message}`);
       wsConnected = false;
-      
       if (onConnectionStatusChange) {
         onConnectionStatusChange(false);
       }
@@ -454,34 +354,20 @@ async function forwardWindData(windData) {
     console.error(`Error in forwardWindData: ${error.message}`);
   }
 }
-
-/**
- * Start SignalK connection
- */
 async function start() {
   authToken = await loadToken();
-  
   if (authToken) {
     connectToSignalK();
   } else {
     await requestAccessToken();
   }
 }
-
-/**
- * Check if connected
- */
 function isConnected() {
   return wsConnected;
 }
-
-/**
- * Get WebSocket instance
- */
 function getWebSocket() {
   return signalkWs;
 }
-
 module.exports = {
   init,
   start,
