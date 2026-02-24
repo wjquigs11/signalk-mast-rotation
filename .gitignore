@@ -5,7 +5,8 @@ direct-pypilot-read.js
 node_modules/
 
 # Build output
-dist/
+# adding dist back because I want a simple install
+#dist/
 
 # Log files
 *.log

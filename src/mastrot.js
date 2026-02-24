@@ -30,13 +30,13 @@ if (DEBUG) {
 if (VERBOSE && !DEBUG) {
   console.log('Verbose mode enabled');
 }
-const windCanDevice = argv.wind;
+let windCanDevice = argv.wind;
 const skServer = argv.skServer;
 const skPort = argv.skPort;
 const clientId = argv.clientId;
-const mastHost = argv.mastHost;
-const boatHost = argv.boatHost;
-const pypilotPort = argv.pypilotPort;
+let mastHost = argv.mastHost;
+let boatHost = argv.boatHost;
+let pypilotPort = argv.pypilotPort;
 const tokenFilePath = path.join(process.cwd(), 'mastrot-token');
 let mastAngle = null; 
 let mastOffset = 0; 
@@ -174,6 +174,22 @@ async function initialize() {
           if (config.toggleCorrect !== undefined) {
             toggleCorrect = config.toggleCorrect;
             console.log(`Loaded wind correction state: ${toggleCorrect ? 'enabled' : 'disabled'}`);
+          }
+          if (config.windCanDevice !== undefined) {
+            windCanDevice = config.windCanDevice;
+            console.log(`Loaded windCanDevice ${windCanDevice} from config file`);
+          }
+          if (config.mastHost !== undefined) {
+            mastHost = config.mastHost;
+            console.log(`Loaded mastHost ${mastHost} from config file`);
+          }
+          if (config.boatHost !== undefined) {
+            boatHost = config.boatHost;
+            console.log(`Loaded boatHost ${boatHost} from config file`);
+          }
+          if (config.pypilotPort !== undefined) {
+            pypilotPort = config.pypilotPort;
+            console.log(`Loaded pypilotPort ${pypilotPort} from config file`);
           }
         }
       }

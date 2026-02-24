@@ -1,14 +1,10 @@
 import * as path from 'path'
 import { spawn, ChildProcess } from 'child_process'
 import { Plugin, ServerAPI } from '@signalk/server-api'
-declare const process: {
-  cwd(): string;
-  [key: string]: any;
-};
+
 export default function (app: ServerAPI): Plugin {
   let dataLogger: any = null
   let mastrotProcess: ChildProcess | null = null
-  const unsubscribes: any[] = []
   const plugin: Plugin = {
     id: 'mastrot',
     name: 'Mast Rotation Angle',
@@ -22,13 +18,29 @@ export default function (app: ServerAPI): Plugin {
       properties: {
         mastRotHelperPort: {
           type: 'number',
-          title: 'Mast Rotation Helper Port',
-          description: 'Port number for the Mast Rotation Helper service',
+          title: 'Mast rotation helper port',
           default: 3333
         },
-        schemaThing: {
+        windCanDevice: {
+          type: 'string',
+          title: 'Wind CAN device',
+          default: 'can0'
+        },
+        mastHost: {
+          type: 'string',
+          title: 'Mast pypilot host',
+          default: '10.1.1.1'
+        },
+        boatHost: {
+          type: 'string',
+          title: 'Boat pypilot host',
+          default: 'localhost'
+        },
+        pypilotPort: {
           type: 'number',
-          description: 'randomThing'
+          title: 'pypilot Port',
+          description: 'Port number for pypilot connections',
+          default: 23322
         }
       }
     },
@@ -53,11 +65,28 @@ export default function (app: ServerAPI): Plugin {
       try {
         const mastRotHelperPort = options.mastRotHelperPort || 3333
         const mastOffset = options.mastOffset || 0
+        const windCanDevice = options.windCanDevice || 'can1'
+        const mastHost = options.mastHost || '10.1.1.1'
+        const boatHost = options.boatHost || 'localhost'
+        const pypilotPort = options.pypilotPort || 23322
         app.debug(`Loading mastOffset from persistent storage: ${mastOffset}`)
         const pluginDir = path.join(process.cwd(), 'node_modules', 'mastrot');
         const mastrotScriptPath = path.join(pluginDir, 'src', 'mastrot.js');
         app.debug(`Using mastrot.js path: ${mastrotScriptPath}`);
-        mastrotProcess = spawn('node', [mastrotScriptPath], {
+        const fs = require('fs-extra');
+        const configFilePath = path.join(pluginDir, 'mastrot-config.json');
+        const config = {
+          windCanDevice: windCanDevice,
+          mastHost: mastHost,
+          boatHost: boatHost,
+          pypilotPort: pypilotPort
+        };
+        try {
+          fs.writeFileSync(configFilePath, JSON.stringify(config, null, 2));
+          app.debug(`Wrote configuration to ${configFilePath}`);
+        } catch (writeError) {
+          app.error(`Failed to write config file: ${writeError instanceof Error ? writeError.message : String(writeError)}`);
+        }        mastrotProcess = spawn('node', [mastrotScriptPath], {
           env: {
             ...process.env,
             PLUGIN_DEBUG: debugLogging ? 'true' : 'false',
@@ -97,77 +126,6 @@ export default function (app: ServerAPI): Plugin {
         app.setPluginError(`Failed to spawn mastrot process: ${error instanceof Error ? error.message : String(error)}`)
       }
       app.setPluginStatus('Running')
-      try {
-        app.subscriptionmanager.subscribe(
-          {
-            context: 'vessels.self' as any,
-            subscribe: [
-              {
-                path: 'sailing.mastAngle' as any,
-                period: 500,
-                format: 'delta',
-                policy: 'fixed'
-              }
-            ]
-          },
-          unsubscribes,
-          subscriptionError,
-          () => {
-            app.debug('Subscription initialized')
-          }
-        )
-        app.debug('Successfully subscribed to mastAngle updates')
-      } catch (error) {
-        app.error(`Failed to subscribe to mastAngle: ${error instanceof Error ? error.message : String(error)}`)
-        app.debug('Continuing plugin operation despite subscription error')
-      }
-      function onSubscriptionData(data: any) {
-        if (data && data.updates) {
-          data.updates.forEach((update: any) => {
-            if (update.values) {
-              update.values.forEach((value: any) => {
-                if (value.path === 'sailing.mastAngle') {
-                  const mastAngle = value.value
-                  if (debugLogging) {
-                    app.debug(`Received mastAngle update: ${mastAngle}`)
-                  }
-                  if (dataLogging) {
-                    const timestamp = new Date().toISOString()
-                    const logEntry = {
-                      timestamp,
-                      mastAngle
-                    }
-                    if (debugLogging) {
-                      app.debug(`Logging data: ${JSON.stringify(logEntry)}`)
-                    }
-                  }
-                  app.handleMessage('mastrot-plugin', {
-                    updates: [
-                      {
-                        values: [
-                          {
-                            path: 'plugins.mastrot.angle' as any,
-                            value: mastAngle
-                          }
-                        ]
-                      }
-                    ]
-                  })
-                }
-              })
-            }
-          })
-        }
-      }
-      function subscriptionError(err: unknown) {
-        const error = err instanceof Error ? err : new Error(String(err))
-        app.error(`Error in mastrot subscription: ${error.message}`)
-        app.setPluginError(`Subscription error: ${error.message}`)
-        app.debug('Continuing plugin operation despite subscription error')
-        if (error.message.includes('unsubscribes.push')) {
-          app.debug('This is a known issue with older SignalK servers. The plugin will continue to function.')
-        }
-      }
     },
     stop: function () {
       app.debug('Mast Rotation plugin stopped')
@@ -190,13 +148,6 @@ export default function (app: ServerAPI): Plugin {
         } catch (error) {
           app.error(`Error terminating mastrot process: ${error instanceof Error ? error.message : String(error)}`)
         }
-      }
-      try {
-        unsubscribes.forEach(unsubscribe => unsubscribe())
-        app.debug('Successfully unsubscribed from SignalK updates')
-      } catch (error) {
-        app.error(`Error unsubscribing: ${error instanceof Error ? error.message : String(error)}`)
-        app.debug('Continuing plugin shutdown despite unsubscribe error')
       }
     },
     registerWithRouter: function (router: any) {
