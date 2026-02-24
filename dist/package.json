@@ -1,0 +1,50 @@
+{
+  "name": "mastrot",
+  "version": "1.0.0",
+  "description": "SignalK plugin for mast rotation angle monitoring and management",
+  "main": "dist/plugin.js",
+  "scripts": {
+    "build": "webpack",
+    "watch": "webpack --watch",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "signalk-plugin",
+    "signalk-node-server-plugin",
+    "signalk-webapp",
+    "sailing",
+    "mast",
+    "rotation"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@canboat/canboatjs": "^3.13.2",
+    "express": "^5.2.1",
+    "fs-extra": "^11.3.3",
+    "minimist": "^1.2.8",
+    "node-fetch": "^2.7.0",
+    "socketcan": "^4.0.3",
+    "ws": "^8.19.0"
+  },
+  "devDependencies": {
+    "@signalk/server-api": "^2.0.0",
+    "@types/node": "^20.0.0",
+    "copy-webpack-plugin": "^11.0.0",
+    "strip-comments": "^2.0.1",
+    "ts-loader": "^9.4.2",
+    "typescript": "^5.0.4",
+    "webpack": "^5.80.0",
+    "webpack-cli": "^5.0.2"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "signalk": {
+    "displayName": "Mast Rotation Angle",
+    "name": "mastrot",
+    "description": "Plugin for monitoring and managing mast rotation angle",
+    "icon": "anchor",
+    "enabledByDefault": true
+  }
+}
