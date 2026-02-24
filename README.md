@@ -7,7 +7,7 @@ A SignalK plugin for monitoring mast rotation angle and correcting masthead AWA 
 Most of the work is done by a helper service spawned by the plugin; the plugin is mostly a configuration and reporting interface.
 
 How to use: on your SignalK server:
-    cd .signalk (or wherever your signalk configuration directory resides)
+    cd .signalk
     npm install https://github.com/wjquigs11/signalk-mast-rotation
 
 I use Raspberry Pi with ICM‑20948 IMU module. SignalK runs on a Pi4 or 5, and the mast compass uses a Pi Zero 2W. I can provide ready-made compasses if needed.
