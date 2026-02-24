@@ -19,7 +19,7 @@
         </div>
         <div class="value-display">
             AWA: <span id="awa-value" class="value">0.0</span>° | 
-            AWS: <span id="aws-value" class="value">0.0</span> m/s | 
+            AWS: <span id="aws-value" class="value">0.0</span> kts | 
             Correct AWA: <span id="correct-awa-value" class="value">0.0</span>°
         </div>
         
@@ -60,7 +60,9 @@
                 
                 // Update wind data
                 document.getElementById('awa-value').textContent = data.inputAWADegrees.toFixed(1);
-                document.getElementById('aws-value').textContent = data.inputAWS.toFixed(2);
+                // Convert AWS from m/s to knots (1 m/s = 1.94384 knots)
+                const awsKnots = data.inputAWS * 1.94384;
+                document.getElementById('aws-value').textContent = awsKnots.toFixed(2);
                 document.getElementById('correct-awa-value').textContent = data.outputAWADegrees.toFixed(1);
             })
             .catch(error => {

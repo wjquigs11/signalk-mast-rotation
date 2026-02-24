@@ -2,7 +2,7 @@
 
 A SignalK plugin for monitoring mast rotation angle and correcting masthead AWA based on the mast angle. This plugin reads wind data from a CAN/N2K bus, reads magnetic heading of the boat from local compass/pypilot, and magnetic heading of the mast from remote compass/pypilot. It uses the difference in headings to calculate a correction for AWA, and sends the corrected AWA to SK, where the SK-to-N2K plugin transmits the corrected AWA on a different CAN bus.
 
-![Mast Rotation Plugin](docs/MastRot-screenshot.png)
+![Mast Rotation Plugin](docs/screen-shot.png)
 
 Most of the work is done by a helper service spawned by the plugin; the plugin is mostly a configuration and reporting interface.
 
@@ -17,6 +17,8 @@ The pypilot master does not have a way of disabling zeroconf, so the mast compas
 
 The IMUs are, for the most part, self-calibrating and calibration improves with time on the boat. Follow pypilot calibration instructions if you are mounting in a non-typical orientation (for example, the mast compass mounted vertically on the mast instead of horizontally on the rotation arm).
 
+Once the IMU/compasses have been installed and calibrated (at minimum, by sailing/motoring in several circles), align the mast on centerline and press the "Center" button in the plugin. This typically only needs to be done once.
 
+![Mast Rotation Plugin Config](docs/plugin-config.png)
 
 
