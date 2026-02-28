@@ -1,0 +1,23 @@
+# 
+# sample mastrot service file for /etc/systemd/system/mastrot.service
+#
+
+[Unit]
+Description=Mast Rotation Angle Monitor
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/mastrot
+ExecStart=/usr/bin/node src/mastrot.js --wind can0 --skServer localhost --skPort 3000
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Environment variables (if needed)
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target

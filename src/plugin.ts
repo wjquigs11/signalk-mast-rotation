@@ -16,6 +16,12 @@ export default function (app: ServerAPI): Plugin {
     schema: {
       type: 'object',
       properties: {
+        mode: {
+          type: 'string',
+          title: 'Mode',
+          enum: ['mast', 'boat'],
+          default: 'mast'
+        },
         mastRotHelperPort: {
           type: 'number',
           title: 'Mast rotation helper port',
@@ -128,28 +134,14 @@ export default function (app: ServerAPI): Plugin {
       app.setPluginStatus('Running')
     },
     stop: function () {
-      app.debug('Mast Rotation plugin stopped')
-      app.setPluginStatus('Stopped')
-      if (dataLogger) {
-        app.debug('Closing data logger')
-        dataLogger = null
-      }
-      if (mastrotProcess) {
-        app.debug('Terminating mastrot process')
-        try {
-          mastrotProcess.kill('SIGTERM')
-          setTimeout(() => {
-            if (mastrotProcess) {
-              app.debug('Force killing mastrot process')
-              mastrotProcess.kill('SIGKILL')
-              mastrotProcess = null
-            }
-          }, 5000) 
-        } catch (error) {
-          app.error(`Error terminating mastrot process: ${error instanceof Error ? error.message : String(error)}`)
-        }
-      }
-    },
+          app.debug('Mast Rotation plugin stopped')
+          app.setPluginStatus('Stopped')
+          if (dataLogger) {
+            app.debug('Closing data logger')
+            dataLogger = null
+          }
+          // mastrot.js is managed by systemd, not by this plugin
+        },
     registerWithRouter: function (router: any) {
       const pluginOptions: any = app.getSelfPath('options')
       const mastRotHelperPort = (pluginOptions && pluginOptions.mastRotHelperPort) ? pluginOptions.mastRotHelperPort : 3333
