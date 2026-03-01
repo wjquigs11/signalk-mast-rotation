@@ -51,14 +51,11 @@ Once the IMU/compasses have been installed and calibrated (at minimum, by sailin
 
 I use Raspberry Pi with ICM‑20948 IMU module. SignalK runs on a Pi4 or 5, and the mast compass uses a Pi Zero 2W. I can provide compasses if needed. The plugin can also work with commercial compasses (Garmin Steadycast, B&G Precision-9) with modification.
 
-## Features
-
-- Real-time mast rotation angle monitoring
-- Automatic AWA correction based on mast angle
-- Web interface for visualization and control
-- CAN bus transmission of corrected wind data (optional)
-- Center and reset calibration controls
-
 ![Mast Rotation Plugin Config](docs/plugin-config.png)
 
+## Note for Garmin Instruments
+
+Most instrument displays have a source configuration option, meaning that if there are two sources for the same data, the user can select which source to display. Garmin's version of this option is very limited: if you have two Garmin transducers sending the same data, you can select between the two, but if you have a Garmin transducer and a non-Garmin transducer, the display will only show Garmin. This means the original wind traffic needs to be isolated from the N2K bus where the displays are connected.
+
+Use two bus backbones, each with termination. Bus #1 has 12VDC power, the wind transducer (or Garmin GND10 if using the Nexus-based wind transducer), and the mast compass. Bus #2 has all of the other instruments, displays, and transducers, including the boat compass.
 
