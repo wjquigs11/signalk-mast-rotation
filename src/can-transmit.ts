@@ -94,20 +94,33 @@ export function transmitWindData(awa: number, aws: number): boolean {
       'Reference': 'Apparent'
     }
 
-    const canMessages = toPgn(pgnData)
+    const canData = toPgn(pgnData)
 
-    if (!canMessages || canMessages.length === 0) {
-      console.error('Failed to generate CAN messages from PGN data')
+    if (!canData) {
+      console.error('Failed to generate CAN data from PGN')
       errorCount++
       return false
     }
 
-    canMessages.forEach((msg: any) => {
-      canChannel.send({
-        id: msg.canId,
-        data: msg.data,
-        ext: true
-      })
+    if (DEBUG) {
+      console.log('toPgn returned:', canData)
+      console.log('Type:', typeof canData, 'IsBuffer:', Buffer.isBuffer(canData), 'IsArray:', Array.isArray(canData))
+    }
+
+    // toPgn returns a Buffer or array of bytes, we need to construct the CAN message
+    const dataBuffer = Buffer.isBuffer(canData) ? canData : Buffer.from(canData)
+    
+    // Construct CAN ID for PGN 130306
+    // Priority: 2, PGN: 130306 (0x1FD02), Source: 255, Destination: 255
+    const priority = 2
+    const pgn = 130306
+    const source = 255
+    const canId = (priority << 26) | (pgn << 8) | source
+
+    canChannel.send({
+      id: canId,
+      data: dataBuffer,
+      ext: true
     })
 
     transmitCount++

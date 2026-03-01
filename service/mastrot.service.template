@@ -1,5 +1,6 @@
 # 
-# sample mastrot service file for /etc/systemd/system/mastrot.service
+# mastrot service file template
+# Run install-service.sh to generate the actual service file
 #
 
 [Unit]
@@ -8,9 +9,9 @@ After=network.target
 
 [Service]
 Type=simple
-User=pi
-WorkingDirectory=/home/pi/mastrot
-ExecStart=/usr/bin/node src/mastrot.js --wind can0 --skServer localhost --skPort 3000
+User=__USER__
+WorkingDirectory=__WORKING_DIR__
+ExecStart=/usr/bin/node mastrot-service/mastrot.js --wind can0 --skServer localhost --skPort 3000
 Restart=always
 RestartSec=10
 StandardOutput=journal

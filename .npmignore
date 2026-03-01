@@ -1,6 +1,5 @@
-# Source files (not needed in published package)
-src/
-*.ts
+# Source TypeScript files (not needed in published package)
+src/*.ts
 tsconfig.json
 webpack.config.js
 
@@ -46,6 +45,7 @@ mastrot-offset
 
 # Keep these in the package:
 # - dist/ (built plugin code)
+# - mastrot-service/ (standalone service files)
 # - package.json
 # - README.md
 # - public/ (web UI assets)

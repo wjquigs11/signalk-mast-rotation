@@ -1,11 +1,9 @@
 import * as path from 'path'
-import { spawn, ChildProcess } from 'child_process'
 import { Plugin, ServerAPI } from '@signalk/server-api'
 import * as canTransmit from './can-transmit'
 
 export default function (app: ServerAPI): Plugin {
   let dataLogger: any = null
-  let mastrotProcess: ChildProcess | null = null
   let unsubscribe: (() => void) | null = null
   let canTransmitEnabled: boolean = false
   const plugin: Plugin = {
@@ -82,69 +80,6 @@ export default function (app: ServerAPI): Plugin {
           active: true,
           startTime: new Date().toISOString()
         }
-      }
-      try {
-        const mastRotHelperPort = options.mastRotHelperPort || 3333
-        const mastOffset = options.mastOffset || 0
-        const windCanDevice = options.windCanDevice || 'can1'
-        const mastHost = options.mastHost || '10.1.1.1'
-        const boatHost = options.boatHost || 'localhost'
-        const pypilotPort = options.pypilotPort || 23322
-        app.debug(`Loading mastOffset from persistent storage: ${mastOffset}`)
-        const pluginDir = path.join(process.cwd(), 'node_modules', 'mastrot');
-        const mastrotScriptPath = path.join(pluginDir, 'src', 'mastrot.js');
-        app.debug(`Using mastrot.js path: ${mastrotScriptPath}`);
-        const fs = require('fs-extra');
-        const configFilePath = path.join(pluginDir, 'mastrot-config.json');
-        const config = {
-          windCanDevice: windCanDevice,
-          mastHost: mastHost,
-          boatHost: boatHost,
-          pypilotPort: pypilotPort
-        };
-        try {
-          fs.writeFileSync(configFilePath, JSON.stringify(config, null, 2));
-          app.debug(`Wrote configuration to ${configFilePath}`);
-        } catch (writeError) {
-          app.error(`Failed to write config file: ${writeError instanceof Error ? writeError.message : String(writeError)}`);
-        }        mastrotProcess = spawn('node', [mastrotScriptPath], {
-          env: {
-            ...process.env,
-            PLUGIN_DEBUG: debugLogging ? 'true' : 'false',
-            MASTROT_PORT: mastRotHelperPort.toString(),
-            MASTROT_OFFSET: mastOffset.toString()
-          }
-        })
-        mastrotProcess?.stdout?.on('data', (data) => {
-          const message = data.toString().trim()
-          if (message) {
-            app.debug(`mastrot stdout: ${message}`)
-          }
-        })
-        mastrotProcess?.stderr?.on('data', (data) => {
-          const message = data.toString().trim()
-          if (message) {
-            app.error(`mastrot stderr: ${message}`)
-          }
-        })
-        mastrotProcess.on('exit', (code, signal) => {
-          if (code !== 0) {
-            app.error(`mastrot process exited with code ${code}, signal: ${signal}`)
-            app.setPluginError(`mastrot process exited unexpectedly with code ${code}`)
-          } else {
-            app.debug('mastrot process exited normally')
-          }
-          mastrotProcess = null
-        })
-        mastrotProcess.on('error', (err) => {
-          app.error(`Error in mastrot process: ${err.message}`)
-          app.setPluginError(`mastrot process error: ${err.message}`)
-          mastrotProcess = null
-        })
-        app.debug('mastrot process started successfully')
-      } catch (error) {
-        app.error(`Failed to spawn mastrot process: ${error instanceof Error ? error.message : String(error)}`)
-        app.setPluginError(`Failed to spawn mastrot process: ${error instanceof Error ? error.message : String(error)}`)
       }
 
       // Initialize CAN transmission if enabled
@@ -245,23 +180,6 @@ export default function (app: ServerAPI): Plugin {
         app.debug('Stopping CAN transmission')
         canTransmit.stopCanTransmit()
         canTransmitEnabled = false
-      }
-
-      // Stop mastrot process if running
-      if (mastrotProcess) {
-        app.debug('Terminating mastrot process')
-        try {
-          mastrotProcess.kill('SIGTERM')
-          setTimeout(() => {
-            if (mastrotProcess) {
-              app.debug('Force killing mastrot process')
-              mastrotProcess.kill('SIGKILL')
-              mastrotProcess = null
-            }
-          }, 5000)
-        } catch (error) {
-          app.error(`Error terminating mastrot process: ${error instanceof Error ? error.message : String(error)}`)
-        }
       }
     },
     registerWithRouter: function (router: any) {
