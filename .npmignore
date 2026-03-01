@@ -1,0 +1,51 @@
+# Source files (not needed in published package)
+src/
+*.ts
+tsconfig.json
+webpack.config.js
+
+# Documentation (keep README.md)
+DEPLOYMENT.md
+PLANNING.md
+CAN_TRANSMIT_PLAN.md
+IMPLEMENTATION_SUMMARY.md
+docs/
+
+# Development files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Git files
+.git/
+.gitignore
+
+# Node modules (users will install their own)
+node_modules/
+
+# Test files
+test/
+*.test.js
+*.spec.js
+
+# CI/CD
+.github/
+.gitlab-ci.yml
+.travis.yml
+
+# Logs
+*.log
+npm-debug.log*
+
+# Runtime/config files
+mastrot-token
+mastrot-config.json
+mastrot-offset
+
+# Keep these in the package:
+# - dist/ (built plugin code)
+# - package.json
+# - README.md
+# - public/ (web UI assets)
