@@ -10,12 +10,13 @@ const signalk = require('./signalk');
 const pypilot = require('./pypilot');
 const argv = minimist(process.argv.slice(2), {
   string: ['wind', 'skServer', 'clientId', 'mastHost', 'boatHost'],
-  boolean: ['debug'],
+  boolean: ['debug', 'report'],
   default: {
     wind: 'can1',
     skServer: 'localhost',
     skPort: 3000,
     debug: false,
+    report: false,
     clientId: 'mast-rotation',
     mastHost: '10.1.1.1',
     boatHost: 'localhost',
@@ -24,11 +25,16 @@ const argv = minimist(process.argv.slice(2), {
 });
 const DEBUG = argv.debug;
 const VERBOSE = argv.verbose || DEBUG; 
+const REPORT_MODE = argv.report;
+
 if (DEBUG) {
   console.log('Debug mode enabled');
 }
 if (VERBOSE && !DEBUG) {
   console.log('Verbose mode enabled');
+}
+if (REPORT_MODE) {
+  console.log('Report mode enabled - mast angle will be reported without modifying wind data');
 }
 let windCanDevice = argv.wind;
 const skServer = argv.skServer;
@@ -79,7 +85,7 @@ windParser.on('pgn', (pgn) => {
       } else {
         outputAWA = inputAWA;
       }
-      const windAngle = (toggleCorrect && outputAWA) ? outputAWA : (pgn.fields.windAngle || 0);
+      const windAngle = (toggleCorrect && outputAWA && !REPORT_MODE) ? outputAWA : (pgn.fields.windAngle || 0);
       const values = [
         {
           path: 'environment.wind.angleApparent',
@@ -267,9 +273,10 @@ async function initialize() {
     console.log(`Monitoring Wind Data (PGN 130306) on ${windCanDevice}`);
     console.log(`Monitoring Mast Heading from PyPilot at ${mastHost}:${pypilotPort}`);
     console.log(`Monitoring Boat Heading from PyPilot at ${boatHost}:${pypilotPort}`);
-    console.log(`Forwarding Corrected Wind Data from ${windCanDevice} to SignalK server at ${skServer}:${skPort}`);
+    console.log(`Forwarding ${REPORT_MODE ? 'Uncorrected' : 'Corrected'} Wind Data from ${windCanDevice} to SignalK server at ${skServer}:${skPort}`);
     console.log(`Debug mode: ${DEBUG ? 'enabled' : 'disabled'} (use --debug to enable)`);
     console.log(`Verbose mode: ${VERBOSE ? 'enabled' : 'disabled'} (use --verbose to enable)`);
+    console.log(`Report mode: ${REPORT_MODE ? 'enabled' : 'disabled'} (use --report to enable)`);
     console.log('Diagnostic information:');
     console.log(`- Node.js version: ${process.version}`);
     console.log(`- Platform: ${process.platform}`);
