@@ -174,7 +174,7 @@ function connectToSignalK() {
           console.log('Attempting to reconnect to SignalK...');
           connectToSignalK();
         }
-      }, 5000);
+      }, 1000);
     });
   } catch (error) {
     console.error(`Error connecting to SignalK: ${error.message}`);
@@ -187,7 +187,7 @@ function connectToSignalK() {
         console.log('Attempting to reconnect to SignalK...');
         connectToSignalK();
       }
-    }, 5000);
+    }, 1000);
   }
 }
 function sendMetadata() {

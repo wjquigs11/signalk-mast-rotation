@@ -470,8 +470,9 @@ if (require.main === module) {
   process.on('SIGINT', () => {
     console.log('Closing CAN channel, WebSocket connection, and API server...');
     windChannel.stop();
-    if (signalkWs) {
-      signalkWs.close();
+    const ws = signalk.getWebSocket();
+    if (ws) {
+      ws.close();
     }
     process.exit(0);
   });
@@ -479,8 +480,9 @@ if (require.main === module) {
   process.on('SIGINT', () => {
     console.log('Closing CAN channel and WebSocket connection...');
     windChannel.stop();
-    if (signalkWs) {
-      signalkWs.close();
+    const ws = signalk.getWebSocket();
+    if (ws) {
+      ws.close();
     }
     process.exit(0);
   });
