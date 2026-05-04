@@ -38,8 +38,12 @@
             Correct AWA: <span id="correct-awa-value" class="value" style="color:blue;">0.0</span>°
         </div>
         <div class="value-display">
-            Boat Hdg (mag): <span id="boat-heading-mag" class="value">—</span>° |
-            Boat Hdg (true): <span id="boat-heading-true" class="value" style="color:#1a6fc4;">—</span>° |
+            Boat Hdg pypilot (true): <span id="boat-heading-pypilot-true" class="value" style="color:#1a6fc4;">—</span>° |
+            Boat Hdg RTK (true): <span id="boat-heading-rtk-true" class="value" style="color:#2a9d2a;">—</span>° |
+            Boat Hdg ESP (mag): <span id="boat-heading-esp-mag" class="value" style="color:#9d2a9d;">—</span>°
+        </div>
+        <div class="value-display">
+            Mag Variation: <span id="mag-variation" class="value" style="color:#666;">—</span>° |
             Mast Hdg: <span id="mast-heading" class="value">0.0</span>° (adj: <span id="mast-heading-adj" class="value">0.0</span>°)
         </div>
 
@@ -83,7 +87,7 @@
             fetch(`${apiBase}/status`)
             .then(r => r.json())
             .then(data => {
-                // Mast angles — server now sends mastAngleMag / mastAngleTrue
+                // Mast angles
                 mastAngleMag  = data.mastAngleMag;
                 mastAngleTrue = data.mastAngleTrue;
                 mastAngleHoney = data.mastAngleHoney;
@@ -110,10 +114,14 @@
                 document.getElementById('correct-awa-value').textContent = data.outputAWADegrees.toFixed(1);
 
                 // Headings
-                const bMag  = data.boatHeadingMag  != null ? rad2deg(data.boatHeadingMag).toFixed(1)  : '—';
-                const bTrue = data.boatHeadingTrue != null ? rad2deg(data.boatHeadingTrue).toFixed(1) : '—';
-                document.getElementById('boat-heading-mag').textContent  = bMag;
-                document.getElementById('boat-heading-true').textContent = bTrue;
+                const bPypilotTrue = data.boatHeadingPypilotTrue != null ? rad2deg(data.boatHeadingPypilotTrue).toFixed(1) : '—';
+                const bRTKTrue     = data.boatHeadingRTKTrue != null ? rad2deg(data.boatHeadingRTKTrue).toFixed(1) : '—';
+                const bESPMag      = data.boatHeadingESPMag != null ? rad2deg(data.boatHeadingESPMag).toFixed(1) : '—';
+                const magVar       = data.magneticVariation != null ? rad2deg(data.magneticVariation).toFixed(1) : '—';
+                document.getElementById('boat-heading-pypilot-true').textContent = bPypilotTrue;
+                document.getElementById('boat-heading-rtk-true').textContent     = bRTKTrue;
+                document.getElementById('boat-heading-esp-mag').textContent      = bESPMag;
+                document.getElementById('mag-variation').textContent             = magVar;
                 document.getElementById('mast-heading').textContent      = rad2deg(data.canHeading).toFixed(1);
                 document.getElementById('mast-heading-adj').textContent  = rad2deg(data.canHeadingAdjusted).toFixed(1);
 
@@ -138,7 +146,6 @@
             const r      = 150;
 
             function drawNeedle(angle, color, width) {
-                // angle in radians; 0 = straight up (bow), positive = starboard
                 const a = angle + Math.PI / 2;
                 ctx.beginPath();
                 ctx.moveTo(cx, cy);
@@ -152,14 +159,12 @@
                 update: function(angleMag, angleTrue, angleHoney) {
                     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-                    // Semicircle arc (bottom half = forward arc)
                     ctx.beginPath();
                     ctx.arc(cx, cy, r, 0, Math.PI);
                     ctx.strokeStyle = '#aaa';
                     ctx.lineWidth   = 2;
                     ctx.stroke();
 
-                    // Centre tick marks at -90°, 0°, +90°
                     [[-Math.PI/2, 'port'], [0, 'fwd'], [Math.PI/2, 'stbd']].forEach(([a, label]) => {
                         const ta = a + Math.PI / 2;
                         ctx.beginPath();
@@ -170,14 +175,10 @@
                         ctx.stroke();
                     });
 
-                    // Honeywell needle (orange, drawn first so others overlay it)
                     if (angleHoney !== null) drawNeedle(angleHoney, '#c47a1a', 2);
-                    // Magnetic needle (black)
                     if (angleMag !== null)   drawNeedle(angleMag,   '#222',    3);
-                    // True needle (blue)
                     if (angleTrue !== null)  drawNeedle(angleTrue,  '#1a6fc4', 3);
 
-                    // Centre dot
                     ctx.beginPath();
                     ctx.arc(cx, cy, 5, 0, Math.PI * 2);
                     ctx.fillStyle = '#333';
@@ -216,7 +217,6 @@
                     ctx.strokeStyle = '#ccc';
                     ctx.lineWidth   = 1;
                     ctx.stroke();
-                    // Bow tick
                     ctx.beginPath();
                     ctx.moveTo(cx, cy - r);
                     ctx.lineTo(cx, cy - r - 8);

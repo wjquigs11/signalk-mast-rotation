@@ -15,11 +15,10 @@ let clientId = 'mast-rotation';
 let tokenFilePath = '';
 let DEBUG = false;
 let VERBOSE = false;
-let subscribeMag = true;
 let subscribeTrue = false;
 // Callbacks
-let onBoatHeadingMagUpdate = null;
 let onBoatHeadingTrueUpdate = null;
+let onMagneticVariationUpdate = null;
 let onConnectionStatusChange = null;
 /**
  * Initialize the SignalK module
@@ -31,10 +30,9 @@ function init(config) {
   tokenFilePath = config.tokenFilePath || path.join(process.cwd(), 'mastrot-token');
   DEBUG = config.debug || false;
   VERBOSE = config.verbose || false;
-  subscribeMag = config.subscribeMag !== undefined ? config.subscribeMag : true;
   subscribeTrue = config.subscribeTrue || false;
-  onBoatHeadingMagUpdate = config.onBoatHeadingMagUpdate || null;
   onBoatHeadingTrueUpdate = config.onBoatHeadingTrueUpdate || null;
+  onMagneticVariationUpdate = config.onMagneticVariationUpdate || null;
   onConnectionStatusChange = config.onConnectionStatusChange || null;
 }
 async function loadToken() {
@@ -162,7 +160,7 @@ function connectToSignalK() {
         const msg = JSON.parse(data);
         if (msg.updates) {
           for (const update of msg.updates) {
-            processPypilotData(update);
+            processSignalKData(update);
           }
         }
         if (DEBUG) console.log('SignalK message:', JSON.stringify(msg));
@@ -230,8 +228,9 @@ async function sendMetadata() {
 }
 function sendSubscriptions() {
   const paths = [{ path: 'environment.wind.*', period: 1000, format: 'delta', policy: 'instant' }];
-  if (subscribeMag) paths.push({ path: 'navigation.headingMagnetic', period: 1000, format: 'delta', policy: 'instant' });
   if (subscribeTrue) paths.push({ path: 'navigation.headingTrue', period: 1000, format: 'delta', policy: 'instant' });
+  // Subscribe to magnetic variation at once per minute
+  paths.push({ path: 'navigation.magneticVariation', period: 60000, format: 'delta', policy: 'instant' });
 
   const subscriptionMsg = { context: 'vessels.self', subscribe: paths };
   try {
@@ -247,52 +246,16 @@ function sendSubscriptions() {
     console.error('Error sending subscription:', error.message);
   }
 }
-function sendTestUpdate() {
-  setTimeout(() => {
-    if (wsConnected && signalkWs.readyState === WebSocket.OPEN) {
-      console.log('Sending test update to SignalK...');
-      const testUpdate = {
-        context: 'vessels.self',
-        updates: [
-          {
-            source: {
-              label: 'pgn-monitor',
-              type: 'CAN'
-            },
-            timestamp: new Date().toISOString(),
-            values: [
-              {
-                path: 'environment.wind.angleApparent',
-                value: 0
-              }
-            ]
-          }
-        ]
-      };
-      try {
-        const testUpdateJson = JSON.stringify(testUpdate);
-        if (signalkWs && signalkWs.readyState === WebSocket.OPEN) {
-          signalkWs.send(testUpdateJson);
-          console.log('Sent test update to SignalK');
-        } else {
-          console.error('WebSocket not ready for sending test update');
-        }
-      } catch (error) {
-        console.error('Error sending test update:', error.message);
-      }
-    }
-  }, 2000);
-}
-function processPypilotData(update) {
+function processSignalKData(update) {
   if (!update.values || !Array.isArray(update.values)) {
     return;
   }
   for (const value of update.values) {
-    if (value.path === 'navigation.headingMagnetic' && value.value !== undefined) {
-      if (onBoatHeadingMagUpdate) onBoatHeadingMagUpdate(value.value);
-    }
     if (value.path === 'navigation.headingTrue' && value.value !== undefined) {
       if (onBoatHeadingTrueUpdate) onBoatHeadingTrueUpdate(value.value);
+    }
+    if (value.path === 'navigation.magneticVariation' && value.value !== undefined) {
+      if (onMagneticVariationUpdate) onMagneticVariationUpdate(value.value);
     }
   }
 }
