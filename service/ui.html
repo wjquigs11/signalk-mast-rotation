@@ -11,7 +11,7 @@
         <h1 style="text-align: center;">Mast Rotation Angle</h1>
 
         <div class="arc-container">
-            <canvas id="arcCanvas" width="400" height="400"></canvas>
+            <canvas id="arcCanvas" width="350" height="350"></canvas>
         </div>
 
         <div class="value-display">
@@ -29,7 +29,7 @@
         </div>
 
         <div class="arc-container">
-            <canvas id="awaCanvas" width="300" height="300"></canvas>
+            <canvas id="awaCanvas" width="350" height="350"></canvas>
         </div>
 
         <div class="value-display">
@@ -53,7 +53,7 @@
             <span class="legend-item"><span class="legend-swatch" style="background:#9d2a9d;"></span> ESP</span>
             <span class="legend-item"><span class="legend-swatch" style="background:#c47a1a;"></span> Mast</span>
         </div>
-        <div class="value-display" style="font-size:14px; color:#888;">
+        <div class="value-display offsets-display">
             Offsets — Pypilot: <span id="offset-pypilot" class="value">0.0</span>° |
             ESP: <span id="offset-esp" class="value">0.0</span>° |
             Mast: <span id="offset-mast" class="value">0.0</span>°
@@ -168,7 +168,7 @@
             const ctx    = canvas.getContext('2d');
             const cx     = canvas.width  / 2;
             const cy     = canvas.height / 2;
-            const r      = 150;
+            const r      = 140;
 
             function drawNeedle(angle, color, width) {
                 const a = angle + Math.PI / 2;
@@ -222,7 +222,7 @@
             const ctx    = canvas.getContext('2d');
             const cx     = canvas.width  / 2;
             const cy     = canvas.height / 2;
-            const r      = 120;
+            const r      = 140;
 
             function drawLine(angleDeg, color, width) {
                 const rad = (angleDeg - 90) * Math.PI / 180;
