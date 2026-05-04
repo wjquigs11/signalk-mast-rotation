@@ -18,7 +18,6 @@ let VERBOSE = false;
 let subscribeTrue = false;
 // Callbacks
 let onBoatHeadingTrueUpdate = null;
-let onMagneticVariationUpdate = null;
 let onConnectionStatusChange = null;
 /**
  * Initialize the SignalK module
@@ -32,7 +31,6 @@ function init(config) {
   VERBOSE = config.verbose || false;
   subscribeTrue = config.subscribeTrue || false;
   onBoatHeadingTrueUpdate = config.onBoatHeadingTrueUpdate || null;
-  onMagneticVariationUpdate = config.onMagneticVariationUpdate || null;
   onConnectionStatusChange = config.onConnectionStatusChange || null;
 }
 async function loadToken() {
@@ -229,8 +227,6 @@ async function sendMetadata() {
 function sendSubscriptions() {
   const paths = [{ path: 'environment.wind.*', period: 1000, format: 'delta', policy: 'instant' }];
   if (subscribeTrue) paths.push({ path: 'navigation.headingTrue', period: 1000, format: 'delta', policy: 'instant' });
-  // Subscribe to magnetic variation at once per minute
-  paths.push({ path: 'navigation.magneticVariation', period: 60000, format: 'delta', policy: 'instant' });
 
   const subscriptionMsg = { context: 'vessels.self', subscribe: paths };
   try {
@@ -253,9 +249,6 @@ function processSignalKData(update) {
   for (const value of update.values) {
     if (value.path === 'navigation.headingTrue' && value.value !== undefined) {
       if (onBoatHeadingTrueUpdate) onBoatHeadingTrueUpdate(value.value);
-    }
-    if (value.path === 'navigation.magneticVariation' && value.value !== undefined) {
-      if (onMagneticVariationUpdate) onMagneticVariationUpdate(value.value);
     }
   }
 }

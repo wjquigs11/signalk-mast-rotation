@@ -30,8 +30,7 @@ const argv = minimist(process.argv.slice(2), {
     true: false,
     local: true,
     honey: null,
-    honeyPort: 80,
-    magneticVariation: 15
+    honeyPort: 80
   }
 });
 const USE_LOCAL    = argv.local;
@@ -66,7 +65,7 @@ function initHeadingTransmit() {
 function transmitMastHeading(headingRadians) {
   if (!headingChannel) return;
   try {
-    const corrected = normalizeAngle(headingRadians + mastCompassCorrectMag);
+    const corrected = normalizeAngle(headingRadians + mastHeadingOffset);
     const pgnData = {
       pgn: 127250,
       'Heading': corrected,
@@ -102,27 +101,26 @@ let mastHost = argv.mastHost;
 let boatHost = argv.boatHost;
 let pypilotPort = argv.pypilotPort;
 const tokenFilePath = path.join(process.cwd(), 'mastrot-token');
-let mastAngle = null;    // mag-based (primary, used for wind correction)
+let mastAngle = null;    // primary mast rotation angle (used for wind correction)
 let mastAngleTrue = null; // true-based (display only)
 let mastAngleHoney = null; // Honeywell direct angle (display only)
 let mastOffset = 0; 
-let mastCompassCorrectMag = 0;
-let mastCompassCorrectTrue = 0;
+// Heading offsets — Center sets these so all headings align to RTK true
+let pypilotOffset = 0;   // offset applied to pypilot heading
+let espOffset = 0;       // offset applied to ESP heading
+let mastHeadingOffset = 0; // offset applied to mast heading
 let lastMastAngleUpdate = 0; 
-let toggleCorrect = true; 
-// Magnetic variation (radians), default from CLI arg (degrees → radians)
-let magneticVariation = argv.magneticVariation * Math.PI / 180;
+let toggleCorrect = true;
 console.log(`Wind CAN device: ${windCanDevice}`);
 console.log(`SignalK server: ${skServer}`);
 console.log(`Signalk port: ${skPort}`);
 let inputAWA = null;
 let inputAWS = null;
 let outputAWA = null;
-let boatHeadingPypilotMag = null;  // magnetic heading from pypilot
-let boatHeadingPypilotTrue = null; // computed: pypilotMag + magneticVariation
-let boatHeadingRTKTrue = null;     // true heading from SignalK (RTK)
-let boatHeadingESPMag = null;      // magnetic heading from CAN PGN 127250
-let canHeading = null;
+let boatHeadingPypilotMag = null;  // magnetic heading from pypilot (raw)
+let boatHeadingRTKTrue = null;     // true heading from SignalK (RTK) — reference
+let boatHeadingESPMag = null;      // magnetic heading from CAN PGN 127250 (raw)
+let canHeading = null;             // mast heading (raw)
 let honeyCentered = false;  // debounce flag for honey auto-center
 const windParser = new FromPgn({
   returnNulls: true,
@@ -235,8 +233,9 @@ async function saveConfig() {
     const configFilePath = path.join(process.cwd(), 'mastrot-config.json');
     const config = {
       mastOffset: mastOffset,
-      mastCompassCorrectMag: mastCompassCorrectMag,
-      mastCompassCorrectTrue: mastCompassCorrectTrue,
+      pypilotOffset: pypilotOffset,
+      espOffset: espOffset,
+      mastHeadingOffset: mastHeadingOffset,
       toggleCorrect: toggleCorrect
     };
     await fs.writeFile(configFilePath, JSON.stringify(config, null, 2));
@@ -277,17 +276,17 @@ async function initialize() {
             mastOffset = parseFloat(config.mastOffset);
             console.log(`Loaded mastOffset ${mastOffset} from local file`);
           }
-          if (config.mastCompassCorrectMag !== undefined) {
-            mastCompassCorrectMag = parseFloat(config.mastCompassCorrectMag);
-            console.log(`Loaded mastCompassCorrectMag ${radToDegree(mastCompassCorrectMag).toFixed(2)}° from local file`);
-          } else if (config.mastCompassCorrect !== undefined) {
-            // migrate legacy single value → mag
-            mastCompassCorrectMag = parseFloat(config.mastCompassCorrect);
-            console.log(`Migrated mastCompassCorrect → mastCompassCorrectMag ${radToDegree(mastCompassCorrectMag).toFixed(2)}°`);
+          if (config.pypilotOffset !== undefined) {
+            pypilotOffset = parseFloat(config.pypilotOffset);
+            console.log(`Loaded pypilotOffset ${radToDegree(pypilotOffset).toFixed(2)}° from local file`);
           }
-          if (config.mastCompassCorrectTrue !== undefined) {
-            mastCompassCorrectTrue = parseFloat(config.mastCompassCorrectTrue);
-            console.log(`Loaded mastCompassCorrectTrue ${radToDegree(mastCompassCorrectTrue).toFixed(2)}° from local file`);
+          if (config.espOffset !== undefined) {
+            espOffset = parseFloat(config.espOffset);
+            console.log(`Loaded espOffset ${radToDegree(espOffset).toFixed(2)}° from local file`);
+          }
+          if (config.mastHeadingOffset !== undefined) {
+            mastHeadingOffset = parseFloat(config.mastHeadingOffset);
+            console.log(`Loaded mastHeadingOffset ${radToDegree(mastHeadingOffset).toFixed(2)}° from local file`);
           }
           if (config.toggleCorrect !== undefined) {
             toggleCorrect = config.toggleCorrect;
@@ -347,14 +346,6 @@ async function initialize() {
           if (VERBOSE) console.log(`Boat Heading RTK (true): ${radToDegree(heading).toFixed(1)}°`);
           if (canHeading !== null && boatHeadingPypilotMag !== null) updateMastAngle();
         },
-        onMagneticVariationUpdate: (variation) => {
-          magneticVariation = variation;
-          if (VERBOSE) console.log(`Magnetic Variation: ${radToDegree(variation).toFixed(1)}°`);
-          // Recompute pypilot true heading
-          if (boatHeadingPypilotMag !== null) {
-            boatHeadingPypilotTrue = normalizeAngle(boatHeadingPypilotMag + magneticVariation);
-          }
-        },
         onConnectionStatusChange: (connected) => {
           console.log(`SignalK connection status: ${connected ? 'connected' : 'disconnected'}`);
         }
@@ -378,8 +369,7 @@ async function initialize() {
         },
         onBoatHeadingUpdate: (heading) => {
           boatHeadingPypilotMag = heading;
-          boatHeadingPypilotTrue = normalizeAngle(heading + magneticVariation);
-          if (VERBOSE) console.log(`Boat Heading pypilot (mag): ${radToDegree(heading).toFixed(1)}°, (true): ${radToDegree(boatHeadingPypilotTrue).toFixed(1)}°`);
+          if (VERBOSE) console.log(`Boat Heading pypilot (mag): ${radToDegree(heading).toFixed(1)}°`);
           if (canHeading !== null) updateMastAngle();
           if (canHeading !== null && inputAWA !== null) outputAWA = normalizeAngle(inputAWA + mastAngle);
         },
@@ -436,7 +426,6 @@ async function initialize() {
     console.log(`Monitoring Wind Data (PGN 130306) + Heading (PGN 127250) on ${windCanDevice}`);
     console.log(`Heading mode: ${[USE_LOCAL ? '--local (pypilot)' : null, USE_HONEY ? `--honey ${argv.honey}` : null].filter(Boolean).join(' + ')}`);
     console.log(`Forwarding ${REPORT_MODE ? 'Uncorrected' : 'Corrected'} Wind Data from ${windCanDevice} to SignalK server at ${skServer}:${skPort}`);
-    console.log(`Magnetic variation: ${radToDegree(magneticVariation).toFixed(1)}° (default, updated from SK)`);
     console.log(`Debug mode: ${DEBUG ? 'enabled' : 'disabled'} (use --debug to enable)`);
     console.log(`Verbose mode: ${VERBOSE ? 'enabled' : 'disabled'} (use --verbose to enable)`);
     console.log(`Report mode: ${REPORT_MODE ? 'enabled' : 'disabled'} (use --report to enable)`);
@@ -465,14 +454,20 @@ function updateMastAngle() {
   if (boatHeadingPypilotMag === null || canHeading === null) {
     return; 
   }
-  const headingDiff = calculateHeadingDifference(boatHeadingPypilotMag, canHeading);
-  mastAngle = normalizeAngle(headingDiff - mastOffset + mastCompassCorrectMag);
+  // Apply offsets: corrected headings aligned to RTK
+  const pypilotCorrected = normalizeAngle(boatHeadingPypilotMag + pypilotOffset);
+  const mastCorrected = normalizeAngle(canHeading + mastHeadingOffset);
 
-  // Also compute true-based mast angle using pypilot true heading
-  if (boatHeadingPypilotTrue !== null) {
-    const trueHeadingDiff = calculateHeadingDifference(boatHeadingPypilotTrue, canHeading);
-    mastAngleTrue = normalizeAngle(trueHeadingDiff - mastOffset + mastCompassCorrectTrue);
+  // Mast angle = difference between corrected boat heading and corrected mast heading
+  const headingDiff = calculateHeadingDifference(pypilotCorrected, mastCorrected);
+  mastAngle = headingDiff;
+
+  // True-based mast angle using RTK as reference
+  if (boatHeadingRTKTrue !== null) {
+    const trueHeadingDiff = calculateHeadingDifference(boatHeadingRTKTrue, mastCorrected);
+    mastAngleTrue = trueHeadingDiff;
   }
+
   const displayMastAngle = mapAngleToDisplayRange(mastAngle);
   if (VERBOSE) {
     console.log(`boatHeadingPypilotMag: ${radToDegree(boatHeadingPypilotMag).toFixed(1)} mastHeading: ${radToDegree(canHeading).toFixed(1)} Updated Mast Angle: ${mastAngle.toFixed(4)} rad (display: ${displayMastAngle.toFixed(4)} rad / ${radToDegree(displayMastAngle).toFixed(1)}°)`);
@@ -512,18 +507,24 @@ const api = {
     center: async function() {
     try {
       console.log("center function");
-      if (boatHeadingPypilotMag === null || canHeading === null) {
+      if (boatHeadingRTKTrue === null) {
         return {
           success: false,
-          message: "Cannot center: Missing heading data from boat or mast"
+          message: "Cannot center: Missing RTK true heading (reference)"
         };
       }
-      const currentDiff = calculateHeadingDifference(boatHeadingPypilotMag, canHeading);
-      mastCompassCorrectMag = -currentDiff;
-
-      if (boatHeadingPypilotTrue !== null) {
-        const currentDiffTrue = calculateHeadingDifference(boatHeadingPypilotTrue, canHeading);
-        mastCompassCorrectTrue = -currentDiffTrue;
+      // Set each offset so that raw + offset = RTK true heading
+      if (boatHeadingPypilotMag !== null) {
+        pypilotOffset = calculateHeadingDifference(boatHeadingPypilotMag, boatHeadingRTKTrue);
+        console.log(`pypilotOffset set to ${radToDegree(pypilotOffset).toFixed(2)}°`);
+      }
+      if (boatHeadingESPMag !== null) {
+        espOffset = calculateHeadingDifference(boatHeadingESPMag, boatHeadingRTKTrue);
+        console.log(`espOffset set to ${radToDegree(espOffset).toFixed(2)}°`);
+      }
+      if (canHeading !== null) {
+        mastHeadingOffset = calculateHeadingDifference(canHeading, boatHeadingRTKTrue);
+        console.log(`mastHeadingOffset set to ${radToDegree(mastHeadingOffset).toFixed(2)}°`);
       }
 
       updateMastAngle();
@@ -532,37 +533,36 @@ const api = {
       } catch (fileError) {
         console.error(`Error saving config to local file: ${fileError.message}`);
       }
-      console.log(`mastCompassCorrectMag set to ${radToDegree(mastCompassCorrectMag).toFixed(2)}°`);
-      if (boatHeadingPypilotTrue !== null)
-        console.log(`mastCompassCorrectTrue set to ${radToDegree(mastCompassCorrectTrue).toFixed(2)}°`);
       return {
         success: true,
-        message: "Mast compass correction set successfully",
-        mastCompassCorrectMag: mastCompassCorrectMag,
-        mastCompassCorrectTrue: mastCompassCorrectTrue
+        message: "All heading offsets aligned to RTK true heading",
+        pypilotOffset: pypilotOffset,
+        espOffset: espOffset,
+        mastHeadingOffset: mastHeadingOffset
       };
     } catch (error) {
       return {
         success: false,
-        message: `Error centering mast angle: ${error.message}`
+        message: `Error centering: ${error.message}`
       };
     }
   },
     reset: async function() {
     try {
       mastOffset = 0;
-      mastCompassCorrectMag = 0;
-      mastCompassCorrectTrue = 0;
+      pypilotOffset = 0;
+      espOffset = 0;
+      mastHeadingOffset = 0;
       updateMastAngle();
       try {
         await saveConfig();
       } catch (fileError) {
         console.error(`Error saving reset config to local file: ${fileError.message}`);
       }
-      console.log("mast angle reset");
+      console.log("all offsets reset");
       return {
         success: true,
-        message: 'Mast rotation offset reset to 0'
+        message: 'All heading offsets reset to 0'
       };
     } catch (error) {
       return {
@@ -591,15 +591,19 @@ app.get('/api/status', (req, res) => {
     mastAngleHoney: mastAngleHoney !== null ? mastAngleHoney : null,
     honeyEnabled: USE_HONEY,
     mastOffset: mastOffset,
+    // Raw headings
     boatHeadingPypilotMag: boatHeadingPypilotMag,
-    boatHeadingPypilotTrue: boatHeadingPypilotTrue,
     boatHeadingRTKTrue: boatHeadingRTKTrue,
     boatHeadingESPMag: boatHeadingESPMag,
-    magneticVariation: magneticVariation,
     canHeading: canHeading !== null ? canHeading : 0,
-    canHeadingAdjusted: canHeading !== null ? normalizeAngle(canHeading + mastCompassCorrectMag) : 0,
-    mastCompassCorrectMag: mastCompassCorrectMag,
-    mastCompassCorrectTrue: mastCompassCorrectTrue,
+    // Corrected headings (raw + offset, aligned to RTK)
+    boatHeadingPypilotCorrected: boatHeadingPypilotMag !== null ? normalizeAngle(boatHeadingPypilotMag + pypilotOffset) : null,
+    boatHeadingESPCorrected: boatHeadingESPMag !== null ? normalizeAngle(boatHeadingESPMag + espOffset) : null,
+    canHeadingCorrected: canHeading !== null ? normalizeAngle(canHeading + mastHeadingOffset) : null,
+    // Offsets
+    pypilotOffset: pypilotOffset,
+    espOffset: espOffset,
+    mastHeadingOffset: mastHeadingOffset,
     inputAWA: inputAWA !== null ? inputAWA : 0,
     inputAWADegrees: inputAWA !== null ? radToDegree(mapAngleToDisplayRange(inputAWA)) : 0,
     inputAWS: inputAWS !== null ? inputAWS : 0,
@@ -639,7 +643,6 @@ module.exports = {
   get mastAngle() { return mastAngle; },
   get mastAngleMapped() { return mapAngleToDisplayRange(mastAngle); },
   get boatHeadingPypilotMag() { return boatHeadingPypilotMag; },
-  get boatHeadingPypilotTrue() { return boatHeadingPypilotTrue; },
   get boatHeadingRTKTrue() { return boatHeadingRTKTrue; },
   get boatHeadingESPMag() { return boatHeadingESPMag; },
   get canHeading() { return canHeading; },

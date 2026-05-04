@@ -37,14 +37,26 @@
             AWS: <span id="aws-value" class="value">0.0</span> kts |
             Correct AWA: <span id="correct-awa-value" class="value" style="color:blue;">0.0</span>°
         </div>
-        <div class="value-display">
-            Boat Hdg pypilot (true): <span id="boat-heading-pypilot-true" class="value" style="color:#1a6fc4;">—</span>° |
-            Boat Hdg RTK (true): <span id="boat-heading-rtk-true" class="value" style="color:#2a9d2a;">—</span>° |
-            Boat Hdg ESP (mag): <span id="boat-heading-esp-mag" class="value" style="color:#9d2a9d;">—</span>°
+        <div class="arc-container">
+            <canvas id="hdgCanvas" width="350" height="350"></canvas>
         </div>
+
         <div class="value-display">
-            Mag Variation: <span id="mag-variation" class="value" style="color:#666;">—</span>° |
-            Mast Hdg: <span id="mast-heading" class="value">0.0</span>° (adj: <span id="mast-heading-adj" class="value">0.0</span>°)
+            <span style="color:#1a6fc4;">Pypilot:</span> <span id="boat-heading-pypilot" class="value" style="color:#1a6fc4;">—</span>° |
+            <span style="color:#2a9d2a;">RTK:</span> <span id="boat-heading-rtk" class="value" style="color:#2a9d2a;">—</span>° |
+            <span style="color:#9d2a9d;">ESP:</span> <span id="boat-heading-esp" class="value" style="color:#9d2a9d;">—</span>° |
+            <span style="color:#c47a1a;">Mast:</span> <span id="mast-heading" class="value" style="color:#c47a1a;">—</span>°
+        </div>
+        <div class="arc-legend">
+            <span class="legend-item"><span class="legend-swatch" style="background:#1a6fc4;"></span> Pypilot</span>
+            <span class="legend-item"><span class="legend-swatch" style="background:#2a9d2a;"></span> RTK</span>
+            <span class="legend-item"><span class="legend-swatch" style="background:#9d2a9d;"></span> ESP</span>
+            <span class="legend-item"><span class="legend-swatch" style="background:#c47a1a;"></span> Mast</span>
+        </div>
+        <div class="value-display" style="font-size:14px; color:#888;">
+            Offsets — Pypilot: <span id="offset-pypilot" class="value">0.0</span>° |
+            ESP: <span id="offset-esp" class="value">0.0</span>° |
+            Mast: <span id="offset-mast" class="value">0.0</span>°
         </div>
 
         <div class="toggle-container">
@@ -113,17 +125,30 @@
                 document.getElementById('aws-value').textContent         = (data.inputAWS * 1.94384).toFixed(2);
                 document.getElementById('correct-awa-value').textContent = data.outputAWADegrees.toFixed(1);
 
-                // Headings
-                const bPypilotTrue = data.boatHeadingPypilotTrue != null ? rad2deg(data.boatHeadingPypilotTrue).toFixed(1) : '—';
-                const bRTKTrue     = data.boatHeadingRTKTrue != null ? rad2deg(data.boatHeadingRTKTrue).toFixed(1) : '—';
-                const bESPMag      = data.boatHeadingESPMag != null ? rad2deg(data.boatHeadingESPMag).toFixed(1) : '—';
-                const magVar       = data.magneticVariation != null ? rad2deg(data.magneticVariation).toFixed(1) : '—';
-                document.getElementById('boat-heading-pypilot-true').textContent = bPypilotTrue;
-                document.getElementById('boat-heading-rtk-true').textContent     = bRTKTrue;
-                document.getElementById('boat-heading-esp-mag').textContent      = bESPMag;
-                document.getElementById('mag-variation').textContent             = magVar;
-                document.getElementById('mast-heading').textContent      = rad2deg(data.canHeading).toFixed(1);
-                document.getElementById('mast-heading-adj').textContent  = rad2deg(data.canHeadingAdjusted).toFixed(1);
+                // Headings (corrected = aligned to RTK after Center)
+                const bPypilot = data.boatHeadingPypilotCorrected != null ? rad2deg(data.boatHeadingPypilotCorrected).toFixed(1) : '—';
+                const bRTK     = data.boatHeadingRTKTrue != null ? rad2deg(data.boatHeadingRTKTrue).toFixed(1) : '—';
+                const bESP     = data.boatHeadingESPCorrected != null ? rad2deg(data.boatHeadingESPCorrected).toFixed(1) : '—';
+                const mastHdg  = data.canHeadingCorrected != null ? rad2deg(data.canHeadingCorrected).toFixed(1) : '—';
+                document.getElementById('boat-heading-pypilot').textContent = bPypilot;
+                document.getElementById('boat-heading-rtk').textContent     = bRTK;
+                document.getElementById('boat-heading-esp').textContent      = bESP;
+                document.getElementById('mast-heading').textContent              = mastHdg;
+
+                // Offsets
+                document.getElementById('offset-pypilot').textContent = rad2deg(data.pypilotOffset).toFixed(1);
+                document.getElementById('offset-esp').textContent     = rad2deg(data.espOffset).toFixed(1);
+                document.getElementById('offset-mast').textContent    = rad2deg(data.mastHeadingOffset).toFixed(1);
+
+                // Update heading compass with corrected headings
+                if (hdgCanvas) {
+                    hdgCanvas.update(
+                        data.boatHeadingPypilotCorrected,
+                        data.boatHeadingRTKTrue,
+                        data.boatHeadingESPCorrected,
+                        data.canHeadingCorrected
+                    );
+                }
 
                 updateAWACircle(data.inputAWADegrees, data.outputAWADegrees);
             })
@@ -238,11 +263,99 @@
             if (awaCanvas) awaCanvas.update(inputDeg, correctedDeg);
         }
 
+        // ── Heading compass canvas ───────────────────────────────────────────
+        let hdgCanvas;
+
+        function initHdgCompass() {
+            const canvas = document.getElementById('hdgCanvas');
+            const ctx    = canvas.getContext('2d');
+            const cx     = canvas.width  / 2;
+            const cy     = canvas.height / 2;
+            const r      = 140;
+
+            function drawNeedle(headingRad, color, width, len) {
+                // heading in radians, 0 = North (up), clockwise positive
+                const a = headingRad - Math.PI / 2; // rotate so 0 points up
+                ctx.beginPath();
+                ctx.moveTo(cx, cy);
+                ctx.lineTo(cx + len * Math.cos(a), cy + len * Math.sin(a));
+                ctx.strokeStyle = color;
+                ctx.lineWidth   = width;
+                ctx.stroke();
+            }
+
+            function drawCompassRose() {
+                // Outer circle
+                ctx.beginPath();
+                ctx.arc(cx, cy, r, 0, 2 * Math.PI);
+                ctx.strokeStyle = '#ccc';
+                ctx.lineWidth   = 1;
+                ctx.stroke();
+
+                // Cardinal ticks and labels
+                const cardinals = [
+                    { label: 'N', angle: -Math.PI/2 },
+                    { label: 'E', angle: 0 },
+                    { label: 'S', angle: Math.PI/2 },
+                    { label: 'W', angle: Math.PI }
+                ];
+                ctx.font = '12px Arial';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                cardinals.forEach(({ label, angle }) => {
+                    // Tick
+                    ctx.beginPath();
+                    ctx.moveTo(cx + (r - 8) * Math.cos(angle), cy + (r - 8) * Math.sin(angle));
+                    ctx.lineTo(cx + (r + 2) * Math.cos(angle), cy + (r + 2) * Math.sin(angle));
+                    ctx.strokeStyle = '#999';
+                    ctx.lineWidth   = 2;
+                    ctx.stroke();
+                    // Label
+                    ctx.fillStyle = '#666';
+                    ctx.fillText(label, cx + (r + 14) * Math.cos(angle), cy + (r + 14) * Math.sin(angle));
+                });
+
+                // Minor ticks every 30°
+                for (let deg = 0; deg < 360; deg += 30) {
+                    if (deg % 90 === 0) continue;
+                    const a = (deg - 90) * Math.PI / 180;
+                    ctx.beginPath();
+                    ctx.moveTo(cx + (r - 5) * Math.cos(a), cy + (r - 5) * Math.sin(a));
+                    ctx.lineTo(cx + (r + 1) * Math.cos(a), cy + (r + 1) * Math.sin(a));
+                    ctx.strokeStyle = '#ccc';
+                    ctx.lineWidth   = 1;
+                    ctx.stroke();
+                }
+            }
+
+            hdgCanvas = {
+                update: function(pypilotTrue, rtkTrue, espMag, mastHdg) {
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                    drawCompassRose();
+
+                    // Draw needles (longest to shortest so shorter ones overlay)
+                    if (pypilotTrue !== null) drawNeedle(pypilotTrue, '#1a6fc4', 3, r - 15);
+                    if (rtkTrue !== null)     drawNeedle(rtkTrue,     '#2a9d2a', 3, r - 25);
+                    if (espMag !== null)      drawNeedle(espMag,      '#9d2a9d', 2, r - 35);
+                    if (mastHdg !== null)     drawNeedle(mastHdg,     '#c47a1a', 2, r - 45);
+
+                    // Centre dot
+                    ctx.beginPath();
+                    ctx.arc(cx, cy, 4, 0, Math.PI * 2);
+                    ctx.fillStyle = '#333';
+                    ctx.fill();
+                }
+            };
+
+            hdgCanvas.update(null, null, null, null);
+        }
+
         // ── Boot ─────────────────────────────────────────────────────────────
         window.addEventListener('DOMContentLoaded', async function() {
             await loadConfig();
             initArc();
             initAWACircle();
+            initHdgCompass();
             startStatusPolling();
 
             fetch(`${apiBase}/wind-correction`)
