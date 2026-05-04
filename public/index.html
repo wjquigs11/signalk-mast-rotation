@@ -22,6 +22,10 @@
             AWS: <span id="aws-value" class="value">0.0</span> kts | 
             Correct AWA: <span id="correct-awa-value" class="value">0.0</span>°
         </div>
+        <div class="value-display">
+            Boat Heading: <span id="boat-heading" class="value">0.0</span>° |
+            Mast Heading: <span id="mast-heading" class="value">0.0</span>°
+        </div>
         
         <div class="toggle-container">
             <label class="toggle-label">
@@ -41,29 +45,34 @@
 
     <script>
         let mastAngle = 0;
-        // Helper port for API calls
-        const mastRotHelperPort = 3333; // Default port, can be overridden by server
         let statusInterval;
-        
+        let apiBase = 'http://10.1.1.1:3333/api'; // default, overridden by config
+
+        async function loadConfig() {
+            try {
+                const res = await fetch('/plugins/mastrot/config');
+                if (!res.ok) throw new Error('config fetch failed');
+                const cfg = await res.json();
+                const mastHost = cfg.mastHost || '10.1.1.1';
+                const mastRotHelperPort = cfg.mastRotHelperPort || 3333;
+                apiBase = `http://${mastHost}:${mastRotHelperPort}/api`;
+                console.log(`config loaded: apiBase=${apiBase}`);
+            } catch (e) {
+                console.warn('Could not load config, using default apiBase:', apiBase);
+            }
+        }
+
         function updateStatus() {
-            // Get status from the mastrot.js API server
-            const host = window.location.hostname;
-            const port = mastRotHelperPort || 3333;
-            
-            fetch(`http://${host}:${port}/api/status`, {
-                method: 'GET'
-            })
+            fetch(`${apiBase}/status`)
             .then(response => response.json())
             .then(data => {
-                // Update mast angle
                 updateMastAngle(data.mastAngle);
-                
-                // Update wind data
                 document.getElementById('awa-value').textContent = data.inputAWADegrees.toFixed(1);
-                // Convert AWS from m/s to knots (1 m/s = 1.94384 knots)
                 const awsKnots = data.inputAWS * 1.94384;
                 document.getElementById('aws-value').textContent = awsKnots.toFixed(2);
                 document.getElementById('correct-awa-value').textContent = data.outputAWADegrees.toFixed(1);
+                document.getElementById('boat-heading').textContent = (data.boatHeading * 180 / Math.PI).toFixed(1);
+                document.getElementById('mast-heading').textContent = (data.canHeading * 180 / Math.PI).toFixed(1);
             })
             .catch(error => {
                 console.error('Error fetching status:', error);
@@ -147,20 +156,15 @@
         }
         
         // Initialize when the page loads
-        window.addEventListener('DOMContentLoaded', function() {
+        window.addEventListener('DOMContentLoaded', async function() {
+            await loadConfig();
             initArc();
             startStatusPolling();
             
             // Get initial wind correction state
-            const host = window.location.hostname;
-            const port = mastRotHelperPort || 3333;
-            
-            fetch(`http://${host}:${port}/api/wind-correction`, {
-                method: 'GET'
-            })
+            fetch(`${apiBase}/wind-correction`)
             .then(response => response.json())
             .then(data => {
-                console.log('Initial wind correction state:', data);
                 if (data.enabled !== undefined) {
                     document.getElementById('wind-correction-toggle').checked = data.enabled;
                 }
@@ -169,84 +173,26 @@
                 console.error('Error getting wind correction state:', error);
             });
             
-            // Set up toggle handler
             document.getElementById('wind-correction-toggle').addEventListener('change', function(e) {
                 const isEnabled = e.target.checked;
-                console.log('Wind correction:', isEnabled ? 'ON' : 'OFF');
-                
-                // Send toggle state to the mastrot.js API server
-                const host = window.location.hostname;
-                const port = mastRotHelperPort || 3333;
-                
-                fetch(`http://${host}:${port}/api/wind-correction?enabled=${isEnabled}`, {
-                    method: 'GET'
-                })
+                fetch(`${apiBase}/wind-correction?enabled=${isEnabled}`)
                 .then(response => response.json())
-                .then(data => {
-                    console.log('Wind correction toggle response:', data);
-                })
-                .catch(error => {
-                    console.error('Error toggling wind correction:', error);
-                });
+                .then(data => console.log('Wind correction toggle response:', data))
+                .catch(error => console.error('Error toggling wind correction:', error));
             });
             
-            // Set up button handlers
             document.getElementById('center-btn').addEventListener('click', function() {
-                // Send center command directly to the mastrot.js API server
-                const host = window.location.hostname;
-                const port = mastRotHelperPort || 3333; // Use the port from configuration or default to 3333
-                
-                // Direct API call to mastrot.js
-                fetch(`http://${host}:${port}/api/center?action=center`, {
-                    method: 'GET'
-                })
-                .then(response => response.json())
-                .then(data => {
-                    console.log('Center response:', data);
-                })
-                .catch(error => {
-                    console.error('Error centering:', error);
-                    // Fallback to the original route if direct API call fails
-                    //fetch(`/plugins/mastrot/api/center?action=center`, {
-                    //    method: 'GET'
-                    //})
-                    //.then(response => response.json())
-                    //.then(data => {
-                    //    console.log('Center response (fallback):', data);
-                    //})
-                    //.catch(err => {
-                    //    console.error('Error centering (fallback):', err);
-                    //});
-                });
+                fetch(`${apiBase}/center`)
+                  .then(res => res.json())
+                  .then(data => console.log('Center result:', data))
+                  .catch(err => console.error('Error sending center command:', err));
             });
             
             document.getElementById('reset-btn').addEventListener('click', function() {
-                // Send reset command directly to the mastrot.js API server
-                const host = window.location.hostname;
-                const port = mastRotHelperPort || 3333; // Use the port from configuration or default to 3333
-                
-                // Direct API call to mastrot.js
-                fetch(`http://${host}:${port}/api/reset?action=reset`, {
-                    method: 'GET'
-                })
+                fetch(`${apiBase}/reset`)
                 .then(response => response.json())
-                .then(data => {
-                    console.log('Reset response:', data);
-                })
-                .catch(error => {
-                    console.error('Error resetting:', error);
-                    // Fallback to the original route if direct API call fails
-                    //fetch(`/plugins/mastrot/api/reset?action=reset`, {
-                    //    method: 'GET'
-                    //})
-                    //.then(response => response.json())
-                    //.then(data => {
-                    //    console.log('Reset response (fallback):', data);
-                    //})
-                    //.catch(err => {
-                    //    console.error('Error resetting (fallback):', err);
-                    //});
-                });
+                .then(data => console.log('Reset response:', data))
+                .catch(error => console.error('Error resetting:', error));
             });
         });
     </script>

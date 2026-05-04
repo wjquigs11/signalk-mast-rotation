@@ -15,8 +15,11 @@ let clientId = 'mast-rotation';
 let tokenFilePath = '';
 let DEBUG = false;
 let VERBOSE = false;
+let subscribeMag = true;
+let subscribeTrue = false;
 // Callbacks
-let onBoatHeadingUpdate = null;
+let onBoatHeadingMagUpdate = null;
+let onBoatHeadingTrueUpdate = null;
 let onConnectionStatusChange = null;
 /**
  * Initialize the SignalK module
@@ -28,7 +31,10 @@ function init(config) {
   tokenFilePath = config.tokenFilePath || path.join(process.cwd(), 'mastrot-token');
   DEBUG = config.debug || false;
   VERBOSE = config.verbose || false;
-  onBoatHeadingUpdate = config.onBoatHeadingUpdate || null;
+  subscribeMag = config.subscribeMag !== undefined ? config.subscribeMag : true;
+  subscribeTrue = config.subscribeTrue || false;
+  onBoatHeadingMagUpdate = config.onBoatHeadingMagUpdate || null;
+  onBoatHeadingTrueUpdate = config.onBoatHeadingTrueUpdate || null;
   onConnectionStatusChange = config.onConnectionStatusChange || null;
 }
 async function loadToken() {
@@ -118,6 +124,10 @@ async function pollForToken(href) {
   }
 }
 function connectToSignalK() {
+  if (signalkWs && (signalkWs.readyState === WebSocket.CONNECTING || signalkWs.readyState === WebSocket.OPEN)) {
+    console.log('WebSocket already connecting or connected, skipping duplicate connect');
+    return;
+  }
   try {
     let wsUrl = `ws://${skServer}:${skPort}/signalk/v1/stream?subscribe=none`;
     if (authToken) {
@@ -141,18 +151,23 @@ function connectToSignalK() {
       setTimeout(() => {
         if (signalkWs.readyState === WebSocket.OPEN) {
           sendMetadata();
-          sendTestUpdate();
+          sendSubscriptions();
         } else {
           console.error(`WebSocket not ready: readyState ${signalkWs.readyState}`);
         }
       }, 1000);
     });
     signalkWs.on('message', (data) => {
-      if (DEBUG || VERBOSE) {
-        try {
-          const msg = JSON.parse(data);
-        } catch (error) {
+      try {
+        const msg = JSON.parse(data);
+        if (msg.updates) {
+          for (const update of msg.updates) {
+            processPypilotData(update);
+          }
         }
+        if (DEBUG) console.log('SignalK message:', JSON.stringify(msg));
+      } catch (error) {
+        console.error('Error parsing SignalK message:', error.message);
       }
     });
     signalkWs.on('error', (error) => {
@@ -190,65 +205,41 @@ function connectToSignalK() {
     }, 1000);
   }
 }
-function sendMetadata() {
-  const metadataMsg = {
-    context: 'vessels.self',
-    updates: [
-      {
-        source: {
-          label: 'pgn-monitor',
-          type: 'CAN'
-        },
-        meta: [
-          {
-            path: 'sailing.mastAngle',
-            value: {
-              units: 'rad',
-              description: 'Mast rotation angle correction (difference between boat heading and mast heading)',
-              displayName: 'Mast Angle'
-            }
-          }
-        ]
-      }
-    ]
-  };
+async function sendMetadata() {
   try {
-    const metadataJson = JSON.stringify(metadataMsg);
-    console.log('Sending metadata message:', metadataJson);
-    if (signalkWs && signalkWs.readyState === WebSocket.OPEN) {
-      signalkWs.send(metadataJson);
+    const response = await fetch(`http://${skServer}:${skPort}/signalk/v1/api/vessels/self/sailing/mastAngle/meta`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(authToken ? { 'Authorization': `Bearer ${authToken}` } : {})
+      },
+      body: JSON.stringify({
+        units: 'rad',
+        description: 'Mast rotation angle correction (difference between boat heading and mast heading)',
+        displayName: 'Mast Angle'
+      })
+    });
+    if (response.ok) {
       console.log('Sent metadata for mastAngle path');
     } else {
-      console.error('WebSocket not ready for sending metadata');
+      console.log(`Metadata PUT returned ${response.status} - continuing anyway`);
     }
   } catch (error) {
-    console.error('Error sending metadata:', error.message);
+    console.log(`Metadata PUT failed: ${error.message} - continuing anyway`);
   }
 }
 function sendSubscriptions() {
-  const subscriptionMsg = {
-    context: 'vessels.self',
-    subscribe: [
-      {
-        path: 'environment.wind.*',
-        period: 1000,
-        format: 'delta',
-        policy: 'instant'
-      },
-      {
-        path: 'navigation.headingMagnetic',
-        period: 1000,
-        format: 'delta',
-        policy: 'instant'
-      }
-    ]
-  };
+  const paths = [{ path: 'environment.wind.*', period: 1000, format: 'delta', policy: 'instant' }];
+  if (subscribeMag) paths.push({ path: 'navigation.headingMagnetic', period: 1000, format: 'delta', policy: 'instant' });
+  if (subscribeTrue) paths.push({ path: 'navigation.headingTrue', period: 1000, format: 'delta', policy: 'instant' });
+
+  const subscriptionMsg = { context: 'vessels.self', subscribe: paths };
   try {
     const subscriptionJson = JSON.stringify(subscriptionMsg);
     console.log('Sending subscription message:', subscriptionJson);
     if (signalkWs && signalkWs.readyState === WebSocket.OPEN) {
       signalkWs.send(subscriptionJson);
-      console.log('Subscribed to SignalK wind data');
+      console.log('Subscribed to SignalK paths');
     } else {
       console.error('WebSocket not ready for sending subscription');
     }
@@ -298,17 +289,16 @@ function processPypilotData(update) {
   }
   for (const value of update.values) {
     if (value.path === 'navigation.headingMagnetic' && value.value !== undefined) {
-      if (onBoatHeadingUpdate) {
-        onBoatHeadingUpdate(value.value);
-      }
+      if (onBoatHeadingMagUpdate) onBoatHeadingMagUpdate(value.value);
+    }
+    if (value.path === 'navigation.headingTrue' && value.value !== undefined) {
+      if (onBoatHeadingTrueUpdate) onBoatHeadingTrueUpdate(value.value);
     }
   }
 }
 async function forwardWindData(windData) {
   try {
     if (!wsConnected || !signalkWs || signalkWs.readyState !== WebSocket.OPEN) {
-      console.log('WebSocket not connected or not ready, attempting to reconnect...');
-      connectToSignalK();
       return;
     }
     const deltaUpdate = {
@@ -330,8 +320,14 @@ async function forwardWindData(windData) {
       console.log(JSON.stringify(deltaUpdate, null, 2));
     }
     const radToDeg = (rad) => rad !== null ? (rad * 180 / Math.PI).toFixed(1) : 'null';
+    const radToDegSigned = (rad) => {
+      if (rad === null) return 'null';
+      let deg = rad * 180 / Math.PI;
+      if (deg > 180) deg -= 360;
+      return deg.toFixed(1);
+    };
     if (VERBOSE) {
-      console.log(`Sending delta update to SignalK | AWA: ${radToDeg(windData.debug.inputAWA)}° | Boat: ${radToDeg(windData.debug.boatHeading)}° | Mast: ${radToDeg(windData.debug.mastHeading)}°`);
+      console.log(`Sending delta update to SignalK | AWA: ${radToDegSigned(windData.debug.inputAWA)}° | Boat: ${radToDeg(windData.debug.boatHeading)}° | Mast: ${radToDeg(windData.debug.mastHeading)}°`);
     }
     if (DEBUG) {
       console.log('WebSocket readyState:', signalkWs.readyState);
@@ -356,6 +352,13 @@ async function forwardWindData(windData) {
 }
 async function start() {
   authToken = await loadToken();
+  // Close any existing connection (may have been opened without a token)
+  if (signalkWs && (signalkWs.readyState === WebSocket.OPEN || signalkWs.readyState === WebSocket.CONNECTING)) {
+    signalkWs.removeAllListeners('close'); // prevent auto-reconnect loop
+    signalkWs.close();
+    signalkWs = null;
+    wsConnected = false;
+  }
   if (authToken) {
     connectToSignalK();
   } else {

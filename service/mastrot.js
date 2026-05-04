@@ -6,26 +6,89 @@ const minimist = require('minimist');
 const fs = require('fs-extra');
 const path = require('path');
 const express = require('express');
+
 const signalk = require('./signalk');
 const pypilot = require('./pypilot');
+const usbcompass = require('./usbcompass');
+const honey = require('./honey');
 const argv = minimist(process.argv.slice(2), {
-  string: ['wind', 'skServer', 'clientId', 'mastHost', 'boatHost'],
-  boolean: ['debug', 'report'],
+  string: ['wind', 'skServer', 'clientId', 'mastHost', 'boatHost', 'headingDevice', 'usbPort', 'honey'],
+  boolean: ['debug', 'report', 'transmitHeading', 'headingOnly', 'mag', 'true', 'local', 'usbcompass'],
   default: {
     wind: 'can1',
     skServer: 'localhost',
     skPort: 3000,
     debug: false,
     report: false,
+    transmitHeading: false,
+    headingOnly: false,
+    headingDevice: 'can0',
     clientId: 'mast-rotation',
     mastHost: '10.1.1.1',
     boatHost: 'localhost',
-    pypilotPort: 23322
+    pypilotPort: 23322,
+    mag: true,
+    true: false,
+    local: true,
+    usbcompass: false,
+    usbPort: '/dev/ttyUSB0',
+    usbBaud: 9600,
+    honey: null,
+    honeyPort: 80
   }
 });
+const USE_LOCAL    = argv.local;
+const USE_USB      = argv.usbcompass;
+const USE_HONEY    = !!argv.honey;
+const HONEY_CENTER_THRESHOLD_DEG = 0.5; // auto-center when |mastAngle| < this
+// --mag is on by default; --true is opt-in; both can be active simultaneously
+const USE_MAG = argv['true'] === true ? argv['mag'] === true : true; // mag on unless only --true given without --mag
+const USE_TRUE = argv['true'] === true;
 const DEBUG = argv.debug;
-const VERBOSE = argv.verbose || DEBUG; 
+const VERBOSE = argv.verbose || DEBUG;
 const REPORT_MODE = argv.report;
+const TRANSMIT_HEADING = argv.transmitHeading;
+const HEADING_ONLY = argv.headingOnly;
+const headingDevice = argv.headingDevice;
+
+let headingChannel = null;
+
+function initHeadingTransmit() {
+  try {
+    headingChannel = socketcan.createRawChannel(headingDevice);
+    headingChannel.addListener('onStopped', () => {
+      console.error(`Heading CAN channel stopped`);
+      headingChannel = null;
+    });
+    headingChannel.start();
+    console.log(`Heading transmit channel started on ${headingDevice}`);
+  } catch (e) {
+    console.error(`Failed to open heading CAN device ${headingDevice}: ${e.message}`);
+    headingChannel = null;
+  }
+}
+
+function transmitMastHeading(headingRadians) {
+  if (!headingChannel) return;
+  try {
+    const corrected = normalizeAngle(headingRadians + mastCompassCorrectMag);
+    const pgnData = {
+      pgn: 127250,
+      'Heading': corrected,
+      'Reference': 'Magnetic'
+    };
+    const canData = toPgn(pgnData);
+    if (!canData) return;
+    const dataBuffer = Buffer.isBuffer(canData) ? canData : Buffer.from(canData);
+    const canId = (2 << 26) | (127250 << 8) | 255;
+    headingChannel.send({ id: canId, data: dataBuffer, ext: true });
+    if (DEBUG) {
+      console.log(`Transmitted PGN 127250: Heading=${radToDegree(corrected).toFixed(1)}°`);
+    }
+  } catch (e) {
+    console.error(`Error transmitting heading: ${e.message}`);
+  }
+}
 
 if (DEBUG) {
   console.log('Debug mode enabled');
@@ -44,8 +107,12 @@ let mastHost = argv.mastHost;
 let boatHost = argv.boatHost;
 let pypilotPort = argv.pypilotPort;
 const tokenFilePath = path.join(process.cwd(), 'mastrot-token');
-let mastAngle = null; 
+let mastAngle = null;    // mag-based (primary, used for wind correction)
+let mastAngleTrue = null; // true-based (display only)
+let mastAngleHoney = null; // Honeywell direct angle (display only)
 let mastOffset = 0; 
+let mastCompassCorrectMag = 0;
+let mastCompassCorrectTrue = 0;
 let lastMastAngleUpdate = 0; 
 let toggleCorrect = true; 
 console.log(`Wind CAN device: ${windCanDevice}`);
@@ -54,8 +121,10 @@ console.log(`Signalk port: ${skPort}`);
 let inputAWA = null;
 let inputAWS = null;
 let outputAWA = null;
-let boatHeading = null;  
-let canHeading = null;   
+let boatHeadingMag = null;  // magnetic heading from SignalK
+let boatHeadingTrue = null; // true heading from SignalK
+let canHeading = null;
+let honeyCentered = false;  // debounce flag for honey auto-center
 const windParser = new FromPgn({
   returnNulls: true,
   checkForInvalidFields: true,
@@ -74,9 +143,9 @@ windParser.on('pgn', (pgn) => {
       inputAWA = pgn.fields.windAngle;
       inputAWS = pgn.fields.windSpeed;
       if (VERBOSE) {
-        console.log(`Wind Data: AWA=${radToDegree(inputAWA).toFixed(1)}°, AWS=${inputAWS.toFixed(1)} m/s`);
+        console.log(`Wind Data: AWA=${radToDegree(mapAngleToDisplayRange(inputAWA)).toFixed(1)}°, AWS=${inputAWS.toFixed(1)} m/s`);
       }
-      if (boatHeading !== null && canHeading !== null) {
+      if (boatHeadingMag !== null && canHeading !== null) {
         const previousMastAngle = mastAngle;
         updateMastAngle();
         if (previousMastAngle !== null && Math.abs(mastAngle - previousMastAngle) > 0.01) {
@@ -85,21 +154,15 @@ windParser.on('pgn', (pgn) => {
       } else {
         outputAWA = inputAWA;
       }
-      const windAngle = (toggleCorrect && outputAWA && !REPORT_MODE) ? outputAWA : (pgn.fields.windAngle || 0);
-      const values = [
-        {
-          path: 'environment.wind.angleApparent',
-          value: windAngle
-        },
-        {
-          path: 'environment.wind.speedApparent',
-          value: pgn.fields.windSpeed || 0
-        },
-        {
-          path: 'environment.wind.angleApparentRaw',
-          value: inputAWA !== null ? inputAWA : 0
-        }
-      ];
+      const values = [];
+      if (!REPORT_MODE) {
+        const windAngle = (toggleCorrect && outputAWA) ? outputAWA : (pgn.fields.windAngle || 0);
+        values.push(
+          { path: 'environment.wind.angleApparent', value: windAngle },
+          { path: 'environment.wind.speedApparent', value: pgn.fields.windSpeed || 0 },
+          { path: 'environment.wind.angleApparentRaw', value: inputAWA !== null ? inputAWA : 0 }
+        );
+      }
       if (mastAngle !== null) {
         values.push({
           path: 'sailing.mastAngle',
@@ -107,19 +170,22 @@ windParser.on('pgn', (pgn) => {
         });
         lastMastAngleUpdate = Date.now();
       }
-      signalk.forwardWindData({ 
-        values,
-        debug: {
-          inputAWA: inputAWA,
-          boatHeading: boatHeading,
-          mastHeading: canHeading
-        }
-      });
+      if (!HEADING_ONLY) {
+        signalk.forwardWindData({ 
+          values,
+          debug: {
+            inputAWA: inputAWA,
+            boatHeading: boatHeadingMag,
+            mastHeading: canHeading
+          }
+        });
+      }
     }
   }
 });
 console.log(`Opening CAN device: ${windCanDevice}`);
-const windChannel = socketcan.createRawChannel(windCanDevice);
+const windChannel = HEADING_ONLY ? null : socketcan.createRawChannel(windCanDevice);
+if (windChannel) {
 windChannel.addListener('onStopped', (msg) => {
   console.error(`Wind CAN channel stopped: ${msg}`);
 });
@@ -133,11 +199,14 @@ windChannel.addListener('onMessage', (msg) => {
     });
   }
 });
+}
 async function saveConfig() {
   try {
     const configFilePath = path.join(process.cwd(), 'mastrot-config.json');
     const config = {
       mastOffset: mastOffset,
+      mastCompassCorrectMag: mastCompassCorrectMag,
+      mastCompassCorrectTrue: mastCompassCorrectTrue,
       toggleCorrect: toggleCorrect
     };
     await fs.writeFile(configFilePath, JSON.stringify(config, null, 2));
@@ -176,6 +245,18 @@ async function initialize() {
           if (config.mastOffset !== undefined) {
             mastOffset = parseFloat(config.mastOffset);
             console.log(`Loaded mastOffset ${mastOffset} from local file`);
+          }
+          if (config.mastCompassCorrectMag !== undefined) {
+            mastCompassCorrectMag = parseFloat(config.mastCompassCorrectMag);
+            console.log(`Loaded mastCompassCorrectMag ${radToDegree(mastCompassCorrectMag).toFixed(2)}° from local file`);
+          } else if (config.mastCompassCorrect !== undefined) {
+            // migrate legacy single value → mag
+            mastCompassCorrectMag = parseFloat(config.mastCompassCorrect);
+            console.log(`Migrated mastCompassCorrect → mastCompassCorrectMag ${radToDegree(mastCompassCorrectMag).toFixed(2)}°`);
+          }
+          if (config.mastCompassCorrectTrue !== undefined) {
+            mastCompassCorrectTrue = parseFloat(config.mastCompassCorrectTrue);
+            console.log(`Loaded mastCompassCorrectTrue ${radToDegree(mastCompassCorrectTrue).toFixed(2)}° from local file`);
           }
           if (config.toggleCorrect !== undefined) {
             toggleCorrect = config.toggleCorrect;
@@ -221,59 +302,134 @@ async function initialize() {
     if (mastOffset === 0) {
       console.log(`No saved mastOffset found, using default: ${mastOffset}`);
     }
-    signalk.init({
-      skServer: skServer,
-      skPort: skPort,
-      clientId: clientId,
-      tokenFilePath: tokenFilePath,
-      debug: DEBUG,
-      verbose: VERBOSE,
-      onBoatHeadingUpdate: null, 
-      onConnectionStatusChange: (connected) => {
-        console.log(`SignalK connection status: ${connected ? 'connected' : 'disconnected'}`);
-      }
-    });
-    signalk.start();
-    pypilot.init({
-      mastHost: mastHost,
-      boatHost: boatHost,
-      pypilotPort: pypilotPort,
-      debug: DEBUG,
-      verbose: VERBOSE,
-      onMastHeadingUpdate: (heading) => {
-        canHeading = heading;
-        if (VERBOSE) {
-          console.log(`Mast Heading: ${radToDegree(heading).toFixed(1)}°`);
+    if (!HEADING_ONLY) {
+      signalk.init({
+        skServer: skServer,
+        skPort: skPort,
+        clientId: clientId,
+        tokenFilePath: tokenFilePath,
+        debug: DEBUG,
+        verbose: VERBOSE,
+        subscribeMag: USE_MAG,
+        subscribeTrue: USE_TRUE,
+        onBoatHeadingMagUpdate: (heading) => {
+          boatHeadingMag = heading;
+          if (VERBOSE) console.log(`Boat Heading (mag): ${radToDegree(heading).toFixed(1)}°`);
+          if (canHeading !== null) updateMastAngle();
+          if (canHeading !== null && inputAWA !== null) outputAWA = normalizeAngle(inputAWA + mastAngle);
+        },
+        onBoatHeadingTrueUpdate: (heading) => {
+          boatHeadingTrue = heading;
+          if (VERBOSE) console.log(`Boat Heading (true): ${radToDegree(heading).toFixed(1)}°`);
+          // recompute mastAngleTrue if we already have canHeading
+          if (canHeading !== null && boatHeadingMag !== null) updateMastAngle();
+        },
+        onConnectionStatusChange: (connected) => {
+          console.log(`SignalK connection status: ${connected ? 'connected' : 'disconnected'}`);
         }
-        if (boatHeading !== null) {
-          updateMastAngle();
+      });
+      signalk.start();
+    }
+    // ── Local pypilot source (--local) ──────────────────────────────────
+    if (USE_LOCAL) {
+      pypilot.init({
+        mastHost: mastHost,
+        boatHost: boatHost,
+        pypilotPort: pypilotPort,
+        debug: DEBUG,
+        verbose: VERBOSE,
+        onMastHeadingUpdate: (heading) => {
+          canHeading = heading;
+          if (VERBOSE) console.log(`Mast Heading (pypilot): ${radToDegree(heading).toFixed(1)}°`);
+          if (TRANSMIT_HEADING) transmitMastHeading(heading);
+          if (boatHeadingMag !== null) updateMastAngle();
+          if (boatHeadingMag !== null && inputAWA !== null) outputAWA = normalizeAngle(inputAWA + mastAngle);
+        },
+        onBoatHeadingUpdate: (heading) => {
+          boatHeadingMag = heading;
+          if (VERBOSE) console.log(`Boat Heading (pypilot): ${radToDegree(heading).toFixed(1)}°`);
+          if (canHeading !== null) updateMastAngle();
+          if (canHeading !== null && inputAWA !== null) outputAWA = normalizeAngle(inputAWA + mastAngle);
+        },
+        onConnectionStatusChange: (source, connected) => {
+          console.log(`PyPilot ${source} connection status: ${connected ? 'connected' : 'disconnected'}`);
         }
-        if (boatHeading !== null && inputAWA !== null) {
-          outputAWA = normalizeAngle(inputAWA + mastAngle);
+      });
+      pypilot.start();
+      console.log(`Mast heading source: pypilot at ${mastHost}:${pypilotPort}`);
+      console.log(`Boat heading source: pypilot at ${boatHost}:${pypilotPort}`);
+    }
+
+    // ── USB compass source (--usbcompass) ────────────────────────────────
+    if (USE_USB) {
+      usbcompass.init({
+        usbPort: argv.usbPort,
+        baudRate: argv.usbBaud,
+        debug: DEBUG,
+        verbose: VERBOSE,
+        onMastHeadingUpdate: (heading) => {
+          canHeading = heading;
+          if (VERBOSE) console.log(`Mast Heading (usbcompass): ${radToDegree(heading).toFixed(1)}°`);
+          if (TRANSMIT_HEADING) transmitMastHeading(heading);
+          if (boatHeadingMag !== null) updateMastAngle();
+          if (boatHeadingMag !== null && inputAWA !== null) outputAWA = normalizeAngle(inputAWA + mastAngle);
+        },
+        onConnectionStatusChange: (connected) => {
+          console.log(`USB compass connection status: ${connected ? 'connected' : 'disconnected'}`);
         }
-      },
-      onBoatHeadingUpdate: (heading) => {
-        boatHeading = heading;
-        if (VERBOSE) {
-          console.log(`Boat Heading: ${radToDegree(heading).toFixed(1)}°`);
+      });
+      usbcompass.start();
+      console.log(`Mast heading source: USB compass at ${argv.usbPort}`);
+    }
+
+    // ── Honeywell SSE source (--honey <hostname>) ────────────────────────
+    if (USE_HONEY) {
+      honey.init({
+        honeyHost: argv.honey,
+        honeyPort: argv.honeyPort,
+        debug: DEBUG,
+        verbose: VERBOSE,
+        onMastAngleUpdate: (radians) => {
+          const degrees = radToDegree(radians);
+          mastAngleHoney = radians;
+          if (VERBOSE) console.log(`Mast Angle (honey): ${degrees.toFixed(1)}°`);
+          // When the Honeywell sensor reads near-zero, the mast is physically
+          // centered — use this as a trigger to auto-calibrate the compass offset.
+          // Debounced: only fires once per centering event (rearms when mast moves away).
+          if (Math.abs(degrees) < HONEY_CENTER_THRESHOLD_DEG) {
+            if (!honeyCentered) {
+              honeyCentered = true;
+              if (VERBOSE) console.log(`[honey] Mast centered (${degrees.toFixed(2)}°, threshold ±${HONEY_CENTER_THRESHOLD_DEG}°) — triggering auto-center`);
+              api.center().then(result => {
+                if (VERBOSE) console.log(`[honey] Auto-center result: ${result.message}`);
+              }).catch(err => {
+                console.error(`[honey] Auto-center error: ${err.message}`);
+              });
+            }
+          } else {
+            honeyCentered = false; // rearm for next centering event
+          }
+        },
+        onConnectionStatusChange: (connected) => {
+          console.log(`Honey SSE connection status: ${connected ? 'connected' : 'disconnected'}`);
         }
-        if (canHeading !== null) {
-          updateMastAngle();
-        }
-        if (canHeading !== null && inputAWA !== null) {
-          outputAWA = normalizeAngle(inputAWA + mastAngle);
-        }
-      },
-      onConnectionStatusChange: (source, connected) => {
-        console.log(`PyPilot ${source} connection status: ${connected ? 'connected' : 'disconnected'}`);
-      }
-    });
-    pypilot.start();
-    windChannel.start();
+      });
+      honey.start();
+      console.log(`Mast angle source: Honeywell SSE at http://${argv.honey}:${argv.honeyPort}/mast-events`);
+    }
+
+    if (!USE_LOCAL && !USE_USB && !USE_HONEY) {
+      console.warn('WARNING: No mast heading source enabled. Use --local, --usbcompass, or --honey <host>.');
+    }
+    if (windChannel) windChannel.start();
+    if (TRANSMIT_HEADING) {
+      initHeadingTransmit();
+      console.log(`Transmitting mast heading (PGN 127250) on ${headingDevice}`);
+    }
     console.log(`Monitoring Wind Data (PGN 130306) on ${windCanDevice}`);
-    console.log(`Monitoring Mast Heading from PyPilot at ${mastHost}:${pypilotPort}`);
-    console.log(`Monitoring Boat Heading from PyPilot at ${boatHost}:${pypilotPort}`);
+    console.log(`Heading mode: ${[USE_LOCAL ? '--local (pypilot)' : null, USE_USB ? '--usbcompass' : null, USE_HONEY ? `--honey ${argv.honey}` : null].filter(Boolean).join(' + ')}`);
     console.log(`Forwarding ${REPORT_MODE ? 'Uncorrected' : 'Corrected'} Wind Data from ${windCanDevice} to SignalK server at ${skServer}:${skPort}`);
+    console.log(`Boat heading source: ${[USE_MAG ? 'headingMagnetic' : null, USE_TRUE ? 'headingTrue' : null].filter(Boolean).join(' + ')} (use --mag / --true)`);
     console.log(`Debug mode: ${DEBUG ? 'enabled' : 'disabled'} (use --debug to enable)`);
     console.log(`Verbose mode: ${VERBOSE ? 'enabled' : 'disabled'} (use --verbose to enable)`);
     console.log(`Report mode: ${REPORT_MODE ? 'enabled' : 'disabled'} (use --report to enable)`);
@@ -281,10 +437,17 @@ async function initialize() {
     console.log(`- Node.js version: ${process.version}`);
     console.log(`- Platform: ${process.platform}`);
     console.log(`- SignalK connected: ${signalk.isConnected() ? 'Yes' : 'No'}`);
-    const pypilotStatus = pypilot.isConnected();
-    console.log(`- PyPilot mast connected: ${pypilotStatus.mast ? 'Yes' : 'No'}`);
-    console.log(`- PyPilot boat connected: ${pypilotStatus.boat ? 'Yes' : 'No'}`);
-    console.log(`- Current mastOffset: ${mastOffset}`);
+    if (USE_LOCAL) {
+      const pypilotStatus = pypilot.isConnected();
+      console.log(`- PyPilot mast connected: ${pypilotStatus.mast ? 'Yes' : 'No'}`);
+      console.log(`- PyPilot boat connected: ${pypilotStatus.boat ? 'Yes' : 'No'}`);
+    }
+    if (USE_USB) {
+      console.log(`- USB compass connected: ${usbcompass.isConnected() ? 'Yes' : 'No'}`);
+    }
+    if (USE_HONEY) {
+      console.log(`- Honey SSE connected: ${honey.isConnected() ? 'Yes' : 'No'}`);
+    }    console.log(`- Current mastOffset: ${mastOffset}`);
     console.log('Press Ctrl+C to exit');
   } catch (error) {
     console.error(`Failed to initialize: ${error.message}`);
@@ -293,14 +456,20 @@ async function initialize() {
   }
 }
 function updateMastAngle() {
-  if (boatHeading === null || canHeading === null) {
+  if (boatHeadingMag === null || canHeading === null) {
     return; 
   }
-  const headingDiff = calculateHeadingDifference(boatHeading, canHeading);
-  mastAngle = normalizeAngle(headingDiff - mastOffset);
+  const headingDiff = calculateHeadingDifference(boatHeadingMag, canHeading);
+  mastAngle = normalizeAngle(headingDiff - mastOffset + mastCompassCorrectMag);
+
+  // Also compute true-based mast angle if we have it
+  if (boatHeadingTrue !== null) {
+    const trueHeadingDiff = calculateHeadingDifference(boatHeadingTrue, canHeading);
+    mastAngleTrue = normalizeAngle(trueHeadingDiff - mastOffset + mastCompassCorrectTrue);
+  }
   const displayMastAngle = mapAngleToDisplayRange(mastAngle);
   if (VERBOSE) {
-    console.log(`boatHeading: ${radToDegree(boatHeading).toFixed(1)} mastHeading: ${radToDegree(canHeading).toFixed(1)} Updated Mast Angle: ${mastAngle.toFixed(4)} rad (display: ${displayMastAngle.toFixed(4)} rad / ${radToDegree(displayMastAngle).toFixed(1)}°)`);
+    console.log(`boatHeadingMag: ${radToDegree(boatHeadingMag).toFixed(1)} mastHeading: ${radToDegree(canHeading).toFixed(1)} Updated Mast Angle: ${mastAngle.toFixed(4)} rad (display: ${displayMastAngle.toFixed(4)} rad / ${radToDegree(displayMastAngle).toFixed(1)}°)`);
   }
   const now = Date.now();
   const signalkWs = signalk.getWebSocket();
@@ -337,25 +506,34 @@ const api = {
     center: async function() {
     try {
       console.log("center function");
-      if (boatHeading === null || canHeading === null) {
+      if (boatHeadingMag === null || canHeading === null) {
         return {
           success: false,
           message: "Cannot center: Missing heading data from boat or mast"
         };
       }
-      const currentDiff = calculateHeadingDifference(boatHeading, canHeading);
-      mastOffset = currentDiff;
+      const currentDiff = calculateHeadingDifference(boatHeadingMag, canHeading);
+      mastCompassCorrectMag = -currentDiff;
+
+      if (boatHeadingTrue !== null) {
+        const currentDiffTrue = calculateHeadingDifference(boatHeadingTrue, canHeading);
+        mastCompassCorrectTrue = -currentDiffTrue;
+      }
+
       updateMastAngle();
       try {
         await saveConfig();
       } catch (fileError) {
         console.error(`Error saving config to local file: ${fileError.message}`);
       }
-      console.log(`mast angle centered at ${mastOffset}`);
+      console.log(`mastCompassCorrectMag set to ${radToDegree(mastCompassCorrectMag).toFixed(2)}°`);
+      if (boatHeadingTrue !== null)
+        console.log(`mastCompassCorrectTrue set to ${radToDegree(mastCompassCorrectTrue).toFixed(2)}°`);
       return {
         success: true,
-        message: "Mast angle centered successfully",
-        offset: mastOffset
+        message: "Mast compass correction set successfully",
+        mastCompassCorrectMag: mastCompassCorrectMag,
+        mastCompassCorrectTrue: mastCompassCorrectTrue
       };
     } catch (error) {
       return {
@@ -367,6 +545,8 @@ const api = {
     reset: async function() {
     try {
       mastOffset = 0;
+      mastCompassCorrectMag = 0;
+      mastCompassCorrectTrue = 0;
       updateMastAngle();
       try {
         await saveConfig();
@@ -400,17 +580,22 @@ app.use((req, res, next) => {
 });
 app.get('/api/status', (req, res) => {
   res.json({
-    mastAngle: mastAngle !== null ? mapAngleToDisplayRange(mastAngle) : 0,
-    mastAngleRaw: mastAngle !== null ? mastAngle : 0,
-    mastAngleDegrees: mastAngle !== null ? radToDegree(mapAngleToDisplayRange(mastAngle)) : 0,
+    mastAngleMag: mastAngle !== null ? mapAngleToDisplayRange(mastAngle) : null,
+    mastAngleTrue: mastAngleTrue !== null ? mapAngleToDisplayRange(mastAngleTrue) : null,
+    mastAngleHoney: mastAngleHoney !== null ? mastAngleHoney : null,
+    honeyEnabled: USE_HONEY,
     mastOffset: mastOffset,
-    boatHeading: boatHeading !== null ? boatHeading : 0,
+    boatHeadingMag: boatHeadingMag,
+    boatHeadingTrue: boatHeadingTrue,
     canHeading: canHeading !== null ? canHeading : 0,
+    canHeadingAdjusted: canHeading !== null ? normalizeAngle(canHeading + mastCompassCorrectMag) : 0,
+    mastCompassCorrectMag: mastCompassCorrectMag,
+    mastCompassCorrectTrue: mastCompassCorrectTrue,
     inputAWA: inputAWA !== null ? inputAWA : 0,
-    inputAWADegrees: inputAWA !== null ? radToDegree(inputAWA) : 0,
+    inputAWADegrees: inputAWA !== null ? radToDegree(mapAngleToDisplayRange(inputAWA)) : 0,
     inputAWS: inputAWS !== null ? inputAWS : 0,
     outputAWA: outputAWA !== null ? outputAWA : 0,
-    outputAWADegrees: outputAWA !== null ? radToDegree(outputAWA) : 0,
+    outputAWADegrees: outputAWA !== null ? radToDegree(mapAngleToDisplayRange(outputAWA)) : 0,
     toggleCorrect: toggleCorrect
   });
 });
@@ -444,7 +629,8 @@ app.get('/api/wind-correction', async (req, res) => {
 module.exports = {
   get mastAngle() { return mastAngle; },
   get mastAngleMapped() { return mapAngleToDisplayRange(mastAngle); },
-  get boatHeading() { return boatHeading; },
+  get boatHeadingMag() { return boatHeadingMag; },
+  get boatHeadingTrue() { return boatHeadingTrue; },
   get canHeading() { return canHeading; },
   get mastOffset() { return mastOffset; },
   set mastOffset(value) { mastOffset = value; },
@@ -460,6 +646,9 @@ module.exports = {
     }).on('error', (err) => {
       console.error(`Failed to start Express server: ${err.message}`);
     });
+
+
+
     return this;
   }
 };
@@ -469,20 +658,22 @@ if (require.main === module) {
   module.exports.startServers();
   process.on('SIGINT', () => {
     console.log('Closing CAN channel, WebSocket connection, and API server...');
-    windChannel.stop();
-    const ws = signalk.getWebSocket();
-    if (ws) {
-      ws.close();
+    if (windChannel) windChannel.stop();
+    if (headingChannel) headingChannel.stop();
+    if (!HEADING_ONLY) {
+      const ws = signalk.getWebSocket();
+      if (ws) ws.close();
     }
     process.exit(0);
   });
 } else {
   process.on('SIGINT', () => {
     console.log('Closing CAN channel and WebSocket connection...');
-    windChannel.stop();
-    const ws = signalk.getWebSocket();
-    if (ws) {
-      ws.close();
+    if (windChannel) windChannel.stop();
+    if (headingChannel) headingChannel.stop();
+    if (!HEADING_ONLY) {
+      const ws = signalk.getWebSocket();
+      if (ws) ws.close();
     }
     process.exit(0);
   });
