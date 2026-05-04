@@ -54,6 +54,49 @@ export function initCanTransmit(config: CanTransmitConfig): boolean {
   }
 }
 
+export function transmitHeading(headingRadians: number): boolean {
+  try {
+    if (!canChannel) {
+      if (DEBUG) console.error('CAN channel not initialized')
+      return false
+    }
+
+    const pgnData = {
+      pgn: 127250,
+      'Heading': headingRadians,
+      'Reference': 'Magnetic'
+    }
+
+    const canData = toPgn(pgnData)
+    if (!canData) {
+      console.error('Failed to generate CAN data from PGN 127250')
+      errorCount++
+      return false
+    }
+
+    const dataBuffer = Buffer.isBuffer(canData) ? canData : Buffer.from(canData)
+    const priority = 2
+    const pgn = 127250
+    const source = 255
+    const canId = (priority << 26) | (pgn << 8) | source
+
+    canChannel.send({ id: canId, data: dataBuffer, ext: true })
+    transmitCount++
+
+    if (DEBUG) {
+      console.log(`Transmitted PGN 127250: Heading=${(headingRadians * 180 / Math.PI).toFixed(1)}°`)
+    }
+
+    return true
+  } catch (error) {
+    const errorMsg = `Error transmitting heading: ${error instanceof Error ? error.message : String(error)}`
+    console.error(errorMsg)
+    errorCount++
+    if (onError) onError(errorMsg)
+    return false
+  }
+}
+
 export function transmitWindData(awa: number, aws: number): boolean {
   try {
     if (!canChannel) {
@@ -138,6 +181,49 @@ export function transmitWindData(awa: number, aws: number): boolean {
     if (onError) {
       onError(errorMsg)
     }
+    return false
+  }
+}
+
+export function transmitHeading(headingRadians: number): boolean {
+  try {
+    if (!canChannel) {
+      if (DEBUG) console.error('CAN channel not initialized')
+      return false
+    }
+
+    const pgnData = {
+      pgn: 127250,
+      'Heading': headingRadians,
+      'Reference': 'Magnetic'
+    }
+
+    const canData = toPgn(pgnData)
+    if (!canData) {
+      console.error('Failed to generate CAN data from PGN 127250')
+      errorCount++
+      return false
+    }
+
+    const dataBuffer = Buffer.isBuffer(canData) ? canData : Buffer.from(canData)
+    const priority = 2
+    const pgn = 127250
+    const source = 255
+    const canId = (priority << 26) | (pgn << 8) | source
+
+    canChannel.send({ id: canId, data: dataBuffer, ext: true })
+    transmitCount++
+
+    if (DEBUG) {
+      console.log(`Transmitted PGN 127250: Heading=${(headingRadians * 180 / Math.PI).toFixed(1)}°`)
+    }
+
+    return true
+  } catch (error) {
+    const errorMsg = `Error transmitting heading: ${error instanceof Error ? error.message : String(error)}`
+    console.error(errorMsg)
+    errorCount++
+    if (onError) onError(errorMsg)
     return false
   }
 }
