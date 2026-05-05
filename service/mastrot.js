@@ -10,8 +10,9 @@ const express = require('express');
 const signalk = require('./signalk');
 const pypilot = require('./pypilot');
 const honey = require('./honey');
+const espcompass = require('./espcompass');
 const argv = minimist(process.argv.slice(2), {
-  string: ['wind', 'skServer', 'clientId', 'mastHost', 'boatHost', 'headingDevice', 'honey'],
+  string: ['wind', 'skServer', 'clientId', 'mastHost', 'boatHost', 'headingDevice', 'honey', 'esphost'],
   boolean: ['debug', 'report', 'transmitHeading', 'headingOnly', 'mag', 'true', 'local'],
   default: {
     wind: 'can1',
@@ -30,11 +31,14 @@ const argv = minimist(process.argv.slice(2), {
     true: false,
     local: true,
     honey: null,
-    honeyPort: 80
+    honeyPort: 80,
+    esphost: null,
+    espPort: 80
   }
 });
-const USE_LOCAL    = argv.local;
-const USE_HONEY    = !!argv.honey;
+const USE_LOCAL  = argv.local;
+const USE_HONEY  = !!argv.honey;
+const USE_ESP    = !!argv.esphost;
 const HONEY_CENTER_THRESHOLD_DEG = 0.5; // auto-center when |mastAngle| < this
 const USE_MAG = argv['true'] === true ? argv['mag'] === true : true;
 const USE_TRUE = argv['true'] === true;
@@ -117,9 +121,9 @@ console.log(`Signalk port: ${skPort}`);
 let inputAWA = null;
 let inputAWS = null;
 let outputAWA = null;
-let boatHeadingPypilotMag = null;  // magnetic heading from pypilot (raw)
+let boatHeadingPypilotMag = null;  // magnetic heading from pypilot
 let boatHeadingRTKTrue = null;     // true heading from SignalK (RTK) — reference
-let boatHeadingESPMag = null;      // magnetic heading from CAN PGN 127250 (raw)
+let boatHeadingESP = null;         // magnetic heading from ESP32 BNO08x via SSE
 let canHeading = null;             // mast heading (raw)
 let honeyCentered = false;  // debounce flag for honey auto-center
 const windParser = new FromPgn({
@@ -181,29 +185,6 @@ windParser.on('pgn', (pgn) => {
   }
 });
 
-// ── CAN bus heading parser (PGN 127250 → boatHeadingESPMag) ──────────────
-const headingParser = new FromPgn({
-  returnNulls: true,
-  checkForInvalidFields: true,
-  includeInputData: true,
-  createPGNObjects: true,
-  resolveEnums: true,
-  canBus: windCanDevice
-});
-headingParser.on('error', (pgn, error) => {
-  console.error(`Error parsing heading data: ${error}`);
-});
-headingParser.on('pgn', (pgn) => {
-  if (pgn.pgn === 127250) {
-    if (pgn.fields && pgn.fields.Heading !== undefined) {
-      boatHeadingESPMag = pgn.fields.Heading; // already in radians
-      if (VERBOSE) {
-        console.log(`Boat Heading ESP (mag): ${radToDegree(boatHeadingESPMag).toFixed(1)}°`);
-      }
-    }
-  }
-});
-
 console.log(`Opening CAN device: ${windCanDevice}`);
 const windChannel = HEADING_ONLY ? null : socketcan.createRawChannel(windCanDevice);
 if (windChannel) {
@@ -214,13 +195,6 @@ windChannel.addListener('onMessage', (msg) => {
   const pgn = parseCanId(msg.id);
   if (pgn.pgn === 130306) {
     windParser.parse({
-      pgn: pgn,
-      length: msg.data.length,
-      data: msg.data
-    });
-  }
-  if (pgn.pgn === 127250) {
-    headingParser.parse({
       pgn: pgn,
       length: msg.data.length,
       data: msg.data
@@ -415,6 +389,27 @@ async function initialize() {
       console.log(`Mast angle source: Honeywell SSE at http://${argv.honey}:${argv.honeyPort}/mast-events`);
     }
 
+    // ── ESP32 BNO08x compass source (--esphost <hostname>) ──────────────
+    if (USE_ESP) {
+      espcompass.init({
+        espHost: argv.esphost,
+        espPort: argv.espPort,
+        debug: DEBUG,
+        verbose: VERBOSE,
+        onBoatHeadingUpdate: (heading) => {
+          boatHeadingESP = heading;
+          if (VERBOSE) console.log(`Boat Heading (ESP BNO08x): ${radToDegree(heading).toFixed(1)}°`);
+          if (canHeading !== null) updateMastAngle();
+          if (canHeading !== null && inputAWA !== null) outputAWA = normalizeAngle(inputAWA + mastAngle);
+        },
+        onConnectionStatusChange: (connected) => {
+          console.log(`ESP compass SSE connection status: ${connected ? 'connected' : 'disconnected'}`);
+        }
+      });
+      espcompass.start();
+      console.log(`Boat heading source: ESP32 BNO08x SSE at http://${argv.esphost}:${argv.espPort}/events`);
+    }
+
     if (!USE_LOCAL && !USE_HONEY) {
       console.warn('WARNING: No mast heading source enabled. Use --local or --honey <host>.');
     }
@@ -423,8 +418,8 @@ async function initialize() {
       initHeadingTransmit();
       console.log(`Transmitting mast heading (PGN 127250) on ${headingDevice}`);
     }
-    console.log(`Monitoring Wind Data (PGN 130306) + Heading (PGN 127250) on ${windCanDevice}`);
-    console.log(`Heading mode: ${[USE_LOCAL ? '--local (pypilot)' : null, USE_HONEY ? `--honey ${argv.honey}` : null].filter(Boolean).join(' + ')}`);
+    console.log(`Monitoring Wind Data (PGN 130306) on ${windCanDevice}`);
+    console.log(`Heading mode: ${[USE_LOCAL ? '--local (pypilot)' : null, USE_ESP ? `--esphost ${argv.esphost}` : null, USE_HONEY ? `--honey ${argv.honey}` : null].filter(Boolean).join(' + ')}`);
     console.log(`Forwarding ${REPORT_MODE ? 'Uncorrected' : 'Corrected'} Wind Data from ${windCanDevice} to SignalK server at ${skServer}:${skPort}`);
     console.log(`Debug mode: ${DEBUG ? 'enabled' : 'disabled'} (use --debug to enable)`);
     console.log(`Verbose mode: ${VERBOSE ? 'enabled' : 'disabled'} (use --verbose to enable)`);
@@ -437,6 +432,9 @@ async function initialize() {
       const pypilotStatus = pypilot.isConnected();
       console.log(`- PyPilot mast connected: ${pypilotStatus.mast ? 'Yes' : 'No'}`);
       console.log(`- PyPilot boat connected: ${pypilotStatus.boat ? 'Yes' : 'No'}`);
+    }
+    if (USE_ESP) {
+      console.log(`- ESP compass connected: ${espcompass.isConnected() ? 'Yes' : 'No'}`);
     }
     if (USE_HONEY) {
       console.log(`- Honey SSE connected: ${honey.isConnected() ? 'Yes' : 'No'}`);
@@ -451,16 +449,16 @@ async function initialize() {
 }
 
 function updateMastAngle() {
-  if (boatHeadingPypilotMag === null || canHeading === null) {
-    return; 
+  // Prefer ESP compass for boat heading if available, fall back to pypilot
+  const activeBoatHeading = boatHeadingESP !== null ? boatHeadingESP : boatHeadingPypilotMag;
+  const activeBoatOffset  = boatHeadingESP !== null ? espOffset      : pypilotOffset;
+  if (activeBoatHeading === null || canHeading === null) {
+    return;
   }
-  // Apply offsets: corrected headings aligned to RTK
-  const pypilotCorrected = normalizeAngle(boatHeadingPypilotMag + pypilotOffset);
+  const boatCorrected = normalizeAngle(activeBoatHeading + activeBoatOffset);
   const mastCorrected = normalizeAngle(canHeading + mastHeadingOffset);
 
-  // Mast angle = difference between corrected boat heading and corrected mast heading
-  const headingDiff = calculateHeadingDifference(pypilotCorrected, mastCorrected);
-  mastAngle = headingDiff;
+  mastAngle = calculateHeadingDifference(boatCorrected, mastCorrected);
 
   // True-based mast angle using RTK as reference
   if (boatHeadingRTKTrue !== null) {
@@ -470,7 +468,8 @@ function updateMastAngle() {
 
   const displayMastAngle = mapAngleToDisplayRange(mastAngle);
   if (VERBOSE) {
-    console.log(`boatHeadingPypilotMag: ${radToDegree(boatHeadingPypilotMag).toFixed(1)} mastHeading: ${radToDegree(canHeading).toFixed(1)} Updated Mast Angle: ${mastAngle.toFixed(4)} rad (display: ${displayMastAngle.toFixed(4)} rad / ${radToDegree(displayMastAngle).toFixed(1)}°)`);
+    const src = boatHeadingESP !== null ? 'ESP' : 'pypilot';
+    console.log(`boatHeading(${src}): ${radToDegree(activeBoatHeading).toFixed(1)}° mastHeading: ${radToDegree(canHeading).toFixed(1)}° mastAngle: ${radToDegree(displayMastAngle).toFixed(1)}°`);
   }
   const now = Date.now();
   const signalkWs = signalk.getWebSocket();
@@ -518,8 +517,8 @@ const api = {
         pypilotOffset = calculateHeadingDifference(boatHeadingPypilotMag, boatHeadingRTKTrue);
         console.log(`pypilotOffset set to ${radToDegree(pypilotOffset).toFixed(2)}°`);
       }
-      if (boatHeadingESPMag !== null) {
-        espOffset = calculateHeadingDifference(boatHeadingESPMag, boatHeadingRTKTrue);
+      if (boatHeadingESP !== null) {
+        espOffset = calculateHeadingDifference(boatHeadingESP, boatHeadingRTKTrue);
         console.log(`espOffset set to ${radToDegree(espOffset).toFixed(2)}°`);
       }
       if (canHeading !== null) {
@@ -593,12 +592,12 @@ app.get('/api/status', (req, res) => {
     mastOffset: mastOffset,
     // Raw headings
     boatHeadingPypilotMag: boatHeadingPypilotMag,
+    boatHeadingESP: boatHeadingESP,
     boatHeadingRTKTrue: boatHeadingRTKTrue,
-    boatHeadingESPMag: boatHeadingESPMag,
     canHeading: canHeading !== null ? canHeading : 0,
     // Corrected headings (raw + offset, aligned to RTK)
     boatHeadingPypilotCorrected: boatHeadingPypilotMag !== null ? normalizeAngle(boatHeadingPypilotMag + pypilotOffset) : null,
-    boatHeadingESPCorrected: boatHeadingESPMag !== null ? normalizeAngle(boatHeadingESPMag + espOffset) : null,
+    boatHeadingESPCorrected: boatHeadingESP !== null ? normalizeAngle(boatHeadingESP + espOffset) : null,
     canHeadingCorrected: canHeading !== null ? normalizeAngle(canHeading + mastHeadingOffset) : null,
     // Offsets
     pypilotOffset: pypilotOffset,
@@ -643,8 +642,8 @@ module.exports = {
   get mastAngle() { return mastAngle; },
   get mastAngleMapped() { return mapAngleToDisplayRange(mastAngle); },
   get boatHeadingPypilotMag() { return boatHeadingPypilotMag; },
+  get boatHeadingESP() { return boatHeadingESP; },
   get boatHeadingRTKTrue() { return boatHeadingRTKTrue; },
-  get boatHeadingESPMag() { return boatHeadingESPMag; },
   get canHeading() { return canHeading; },
   get mastOffset() { return mastOffset; },
   set mastOffset(value) { mastOffset = value; },
